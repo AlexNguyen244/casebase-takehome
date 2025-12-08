@@ -117,10 +117,10 @@ async def upload_pdf(file: UploadFile = File(...)):
 
         logger.info(f"Successfully uploaded {file.filename} to S3")
 
-        # Process through RAG pipeline
+        # Process through RAG pipeline using S3 key for uniqueness
         rag_result = await rag_service.process_pdf(
             file_content=content,
-            file_name=file.filename
+            file_name=s3_result["s3_key"]
         )
 
         logger.info(f"Successfully processed {file.filename} through RAG pipeline")
@@ -233,14 +233,11 @@ async def delete_pdf(s3_key: str):
         dict: Confirmation message
     """
     try:
-        # Extract file name from s3_key
-        file_name = s3_key.split('/')[-1] if '/' in s3_key else s3_key
-
         # Delete from S3
         await s3_service.delete_pdf(s3_key)
 
-        # Delete from Pinecone
-        pinecone_result = await pinecone_service.delete_by_file(file_name)
+        # Delete from Pinecone using the full S3 key
+        pinecone_result = await pinecone_service.delete_by_file(s3_key)
 
         return {
             "message": "PDF deleted successfully from S3 and Pinecone",
