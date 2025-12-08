@@ -1,0 +1,193 @@
+"""
+Chat service for handling conversational AI with RAG integration.
+Uses OpenAI's GPT models to generate responses based on retrieved document context.
+"""
+
+from typing import List, Dict, Optional
+import logging
+from openai import AsyncOpenAI
+
+from embedding_service import EmbeddingService
+from pinecone_service import PineconeService
+
+logger = logging.getLogger(__name__)
+
+
+class ChatService:
+    """Service for handling chat completions with RAG context."""
+
+    def __init__(
+        self,
+        openai_api_key: str,
+        embedding_service: EmbeddingService,
+        pinecone_service: PineconeService,
+        model: str = "gpt-4o-mini"
+    ):
+        """
+        Initialize the chat service.
+
+        Args:
+            openai_api_key: OpenAI API key
+            embedding_service: Service for generating embeddings
+            pinecone_service: Service for vector storage
+            model: OpenAI model to use (default: gpt-4o-mini)
+        """
+        self.client = AsyncOpenAI(api_key=openai_api_key)
+        self.embedding_service = embedding_service
+        self.pinecone_service = pinecone_service
+        self.model = model
+
+    async def chat_with_documents(
+        self,
+        message: str,
+        conversation_history: Optional[List[Dict]] = None,
+        file_filter: Optional[str] = None,
+        top_k: int = 5
+    ) -> Dict:
+        """
+        Generate a chat response using RAG.
+
+        Args:
+            message: User's message/question
+            conversation_history: Previous messages in the conversation
+            file_filter: Optional file name to filter results
+            top_k: Number of document chunks to retrieve
+
+        Returns:
+            Dictionary with response and metadata
+        """
+        try:
+            logger.info(f"Processing chat message: {message[:50]}...")
+
+            # Step 1: Generate embedding for the query
+            query_embedding = await self.embedding_service.generate_embedding(message)
+
+            # Step 2: Retrieve relevant chunks from Pinecone
+            metadata_filter = {"file_name": file_filter} if file_filter else None
+
+            results = await self.pinecone_service.query(
+                query_embedding=query_embedding,
+                top_k=top_k,
+                filter=metadata_filter
+            )
+
+            logger.info(f"Retrieved {len(results)} relevant chunks")
+
+            # Step 3: Build context from retrieved chunks
+            if not results:
+                # No relevant documents found
+                context = "No relevant documents found in the knowledge base."
+                sources = []
+            else:
+                # Format retrieved chunks into context
+                context_parts = []
+                sources = []
+
+                for result in results:
+                    metadata = result.get("metadata", {})
+                    chunk_text = metadata.get("chunk_text", "")
+                    file_name = metadata.get("file_name", "unknown")
+                    score = result.get("score", 0)
+
+                    # Just add the content without document labels
+                    context_parts.append(chunk_text)
+
+                    sources.append({
+                        "file_name": file_name,
+                        "chunk_id": metadata.get("chunk_id"),
+                        "relevance_score": score
+                    })
+
+                # Join chunks with clear separation
+                context = "\n\n".join(context_parts)
+
+            # Step 4: Build system prompt with RAG context
+            system_prompt = self._build_system_prompt(context)
+
+            # Step 5: Build conversation messages
+            messages = [{"role": "system", "content": system_prompt}]
+
+            # Add conversation history if provided
+            if conversation_history:
+                messages.extend(conversation_history)
+
+            # Add current user message
+            messages.append({"role": "user", "content": message})
+
+            # Step 6: Generate response using OpenAI
+            logger.info(f"Calling OpenAI {self.model}...")
+
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=1000
+            )
+
+            assistant_message = response.choices[0].message.content
+            usage = {
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens
+            }
+
+            logger.info(f"Response generated. Tokens used: {usage['total_tokens']}")
+
+            return {
+                "message": assistant_message,
+                "sources": sources,
+                "retrieved_chunks": len(results),
+                "usage": usage,
+                "model": self.model
+            }
+
+        except Exception as e:
+            logger.error(f"Chat service error: {str(e)}")
+            raise Exception(f"Chat processing failed: {str(e)}")
+
+    def _build_system_prompt(self, context: str) -> str:
+        """
+        Build the system prompt with RAG context.
+
+        Args:
+            context: Retrieved document context
+
+        Returns:
+            System prompt string
+        """
+        return f"""You are Casey, an intelligent AI assistant for CaseBase, a community supervision platform. Your role is to help users understand and extract information from their uploaded PDF documents.
+
+INSTRUCTIONS:
+1. Answer questions based ONLY on the provided context below
+2. If the context doesn't contain relevant information, politely say you don't have that information in the documents
+3. Be concise, accurate, and helpful
+4. Synthesize information naturally without referring to "Document 1", "Document 2", or numbered sources
+5. Present information as if you're directly answering from the documents
+6. Never make up or infer information that isn't in the provided context
+
+CONTEXT FROM DOCUMENTS:
+{context}
+
+Remember: Only use information from the context above to answer questions. Provide direct, natural answers without mentioning document numbers or labels."""
+
+    async def get_chat_completion_stream(
+        self,
+        message: str,
+        conversation_history: Optional[List[Dict]] = None,
+        file_filter: Optional[str] = None,
+        top_k: int = 5
+    ):
+        """
+        Generate a streaming chat response (for future implementation).
+
+        Args:
+            message: User's message/question
+            conversation_history: Previous messages in the conversation
+            file_filter: Optional file name to filter results
+            top_k: Number of document chunks to retrieve
+
+        Yields:
+            Chunks of the response as they're generated
+        """
+        # This can be implemented later for streaming responses
+        pass

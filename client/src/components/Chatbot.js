@@ -1,5 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Send, Bot } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+
+const API_BASE_URL = 'http://localhost:8000';
 
 const Chatbot = ({ uploadedPDFs }) => {
   const [messages, setMessages] = useState([
@@ -12,6 +15,7 @@ const Chatbot = ({ uploadedPDFs }) => {
   ]);
   const [inputMessage, setInputMessage] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const [error, setError] = useState(null);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
 
@@ -28,6 +32,18 @@ const Chatbot = ({ uploadedPDFs }) => {
 
     if (!inputMessage.trim()) return;
 
+    // Check if documents are uploaded
+    if (uploadedPDFs.length === 0) {
+      const errorMsg = {
+        id: Date.now(),
+        type: 'bot',
+        text: "Please upload at least one PDF document before asking questions. I need documents to search through!",
+        timestamp: new Date().toISOString(),
+      };
+      setMessages((prev) => [...prev, errorMsg]);
+      return;
+    }
+
     const userMessage = {
       id: Date.now(),
       type: 'user',
@@ -35,46 +51,65 @@ const Chatbot = ({ uploadedPDFs }) => {
       timestamp: new Date().toISOString(),
     };
 
-    setMessages([...messages, userMessage]);
+    setMessages((prev) => [...prev, userMessage]);
+    const currentMessage = inputMessage;
     setInputMessage('');
     setIsTyping(true);
+    setError(null);
 
-    setTimeout(() => {
+    try {
+      // Build conversation history (last 5 messages for context)
+      const conversationHistory = messages
+        .slice(-10) // Get last 10 messages
+        .map(msg => ({
+          role: msg.type === 'user' ? 'user' : 'assistant',
+          content: msg.text
+        }));
+
+      // Call the chat API
+      const response = await fetch(`${API_BASE_URL}/api/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          message: currentMessage,
+          conversation_history: conversationHistory,
+          file_filter: null, // Search across all documents
+          top_k: 5
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to get response from AI');
+      }
+
+      const data = await response.json();
+
       const botResponse = {
         id: Date.now() + 1,
         type: 'bot',
-        text: generateBotResponse(inputMessage, uploadedPDFs),
+        text: data.data.message,
+        sources: data.data.sources,
         timestamp: new Date().toISOString(),
       };
+
       setMessages((prev) => [...prev, botResponse]);
+    } catch (error) {
+      console.error('Chat error:', error);
+      setError(error.message);
+
+      const errorResponse = {
+        id: Date.now() + 1,
+        type: 'bot',
+        text: "I'm sorry, I encountered an error processing your question. Please try again.",
+        timestamp: new Date().toISOString(),
+      };
+
+      setMessages((prev) => [...prev, errorResponse]);
+    } finally {
       setIsTyping(false);
-    }, 1000);
-  };
-
-  const generateBotResponse = (message, pdfs) => {
-    const lowerMessage = message.toLowerCase();
-
-    if (lowerMessage.includes('hello') || lowerMessage.includes('hi')) {
-      return "Hello! How can I help you with your documents today?";
     }
-
-    if (lowerMessage.includes('how many') && lowerMessage.includes('document')) {
-      return `You currently have ${pdfs.length} document${pdfs.length !== 1 ? 's' : ''} uploaded.`;
-    }
-
-    if (lowerMessage.includes('what') && lowerMessage.includes('document')) {
-      if (pdfs.length === 0) {
-        return "You haven't uploaded any documents yet. Please upload some PDFs to get started.";
-      }
-      const fileList = pdfs.map(pdf => `• ${pdf.name}`).join('\n');
-      return `Here are your uploaded documents:\n\n${fileList}`;
-    }
-
-    if (pdfs.length === 0) {
-      return "I'd be happy to help analyze your documents, but you haven't uploaded any PDFs yet. Please upload some documents first!";
-    }
-
-    return `I understand you're asking about: "${message}". Once the backend is connected, I'll be able to analyze your ${pdfs.length} uploaded document${pdfs.length !== 1 ? 's' : ''} and provide detailed answers!`;
   };
 
   const formatTime = (isoString) => {
@@ -90,7 +125,7 @@ const Chatbot = ({ uploadedPDFs }) => {
       <div className="bg-gradient-to-r from-primary to-primary-dark text-white p-6 rounded-t-lg">
         <h2 className="text-2xl font-bold text-center">Hey, I'm Casey!</h2>
         <p className="text-center text-blue-100 text-sm mt-1">
-          Ask me anything about CaseBase
+          Ask me anything about your documents
         </p>
       </div>
 
@@ -117,7 +152,36 @@ const Chatbot = ({ uploadedPDFs }) => {
                   : 'bg-gray-100 text-gray-800'
               } rounded-2xl px-4 py-3`}
             >
-              <p className="text-sm whitespace-pre-line">{message.text}</p>
+              {message.type === 'bot' ? (
+                <div className="text-sm prose prose-sm max-w-none">
+                  <ReactMarkdown
+                    components={{
+                      p: ({node, ...props}) => <p className="mb-2 last:mb-0" {...props} />,
+                      strong: ({node, ...props}) => <strong className="font-semibold" {...props} />,
+                      ul: ({node, ...props}) => <ul className="list-disc ml-4 mb-2" {...props} />,
+                      ol: ({node, ...props}) => <ol className="list-decimal ml-4 mb-2" {...props} />,
+                      li: ({node, ...props}) => <li className="mb-1" {...props} />,
+                      code: ({node, ...props}) => <code className="bg-gray-200 px-1 rounded" {...props} />,
+                    }}
+                  >
+                    {message.text}
+                  </ReactMarkdown>
+                </div>
+              ) : (
+                <p className="text-sm whitespace-pre-line">{message.text}</p>
+              )}
+
+              {message.sources && message.sources.length > 0 && (
+                <div className="mt-2 pt-2 border-t border-gray-300">
+                  <p className="text-xs font-semibold text-gray-600 mb-1">Sources:</p>
+                  {message.sources.slice(0, 3).map((source, idx) => (
+                    <p key={idx} className="text-xs text-gray-500">
+                      • {source.file_name.split('/').pop()} (relevance: {(source.relevance_score * 100).toFixed(1)}%)
+                    </p>
+                  ))}
+                </div>
+              )}
+
               <p
                 className={`text-xs mt-1 ${
                   message.type === 'user' ? 'text-blue-100' : 'text-gray-500'
@@ -160,7 +224,7 @@ const Chatbot = ({ uploadedPDFs }) => {
             type="text"
             value={inputMessage}
             onChange={(e) => setInputMessage(e.target.value)}
-            placeholder="Ask me about CaseBase features, pricing, or anything else..."
+            placeholder="Ask me about your documents..."
             className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
           />
           <button

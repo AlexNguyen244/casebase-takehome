@@ -6,7 +6,7 @@ Handles PDF uploads to AWS S3 and provides endpoints for CRUD operations.
 from fastapi import FastAPI, UploadFile, File, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from typing import List
+from typing import List, Optional
 import logging
 
 from config import settings
@@ -14,6 +14,8 @@ from s3_service import s3_service
 from embedding_service import EmbeddingService
 from pinecone_service import PineconeService
 from rag_service import RAGService
+from chat_service import ChatService
+from pydantic import BaseModel
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -52,6 +54,13 @@ pinecone_service = PineconeService(
 rag_service = RAGService(
     embedding_service=embedding_service,
     pinecone_service=pinecone_service
+)
+
+chat_service = ChatService(
+    openai_api_key=settings.openai_api_key,
+    embedding_service=embedding_service,
+    pinecone_service=pinecone_service,
+    model="gpt-4o-mini"
 )
 
 
@@ -318,6 +327,55 @@ async def query_documents(query: str, top_k: int = 5, file_name: str = None):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to process query: {str(e)}"
+        )
+
+
+# Pydantic models for chat endpoint
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+    conversation_history: Optional[List[ChatMessage]] = []
+    file_filter: Optional[str] = None
+    top_k: Optional[int] = 5
+
+
+@app.post("/api/chat")
+async def chat_with_documents(request: ChatRequest):
+    """
+    Chat with the AI assistant using RAG.
+
+    Args:
+        request: Chat request with message and optional history
+
+    Returns:
+        dict: AI response with sources and metadata
+    """
+    try:
+        # Convert Pydantic models to dicts for the chat service
+        history = [{"role": msg.role, "content": msg.content} for msg in request.conversation_history]
+
+        # Call chat service
+        result = await chat_service.chat_with_documents(
+            message=request.message,
+            conversation_history=history if history else None,
+            file_filter=request.file_filter,
+            top_k=request.top_k
+        )
+
+        return {
+            "success": True,
+            "data": result
+        }
+
+    except Exception as e:
+        logger.error(f"Chat request failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to process chat: {str(e)}"
         )
 
 
