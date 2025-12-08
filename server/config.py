@@ -14,6 +14,13 @@ class Settings(BaseSettings):
     aws_region: str = "us-east-1"
     s3_bucket_name: str
 
+    openai_api_key: str
+    pinecone_api_key: str
+    pinecone_index_name: str = "casebase-documents"
+    pinecone_dimension: int = 1536
+    pinecone_cloud: str = "aws"
+    pinecone_region: str = "us-east-1"
+
     allowed_origins: str = "http://localhost:3000"
 
     class Config:

@@ -11,6 +11,9 @@ import logging
 
 from config import settings
 from s3_service import s3_service
+from embedding_service import EmbeddingService
+from pinecone_service import PineconeService
+from rag_service import RAGService
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -31,6 +34,33 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Initialize RAG services
+embedding_service = EmbeddingService(
+    api_key=settings.openai_api_key,
+    model="text-embedding-3-small"
+)
+
+pinecone_service = PineconeService(
+    api_key=settings.pinecone_api_key,
+    index_name=settings.pinecone_index_name,
+    dimension=settings.pinecone_dimension,
+    cloud=settings.pinecone_cloud,
+    region=settings.pinecone_region
+)
+
+rag_service = RAGService(
+    embedding_service=embedding_service,
+    pinecone_service=pinecone_service
+)
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize services on startup."""
+    logger.info("Initializing Pinecone index...")
+    await pinecone_service.initialize_index()
+    logger.info("Pinecone index initialized successfully")
 
 
 @app.get("/")
@@ -79,17 +109,26 @@ async def upload_pdf(file: UploadFile = File(...)):
         content = await file.read()
 
         # Upload to S3
-        result = await s3_service.upload_pdf(
+        s3_result = await s3_service.upload_pdf(
             file_content=content,
             file_name=file.filename,
             content_type=file.content_type
         )
 
-        logger.info(f"Successfully uploaded {file.filename}")
+        logger.info(f"Successfully uploaded {file.filename} to S3")
+
+        # Process through RAG pipeline
+        rag_result = await rag_service.process_pdf(
+            file_content=content,
+            file_name=file.filename
+        )
+
+        logger.info(f"Successfully processed {file.filename} through RAG pipeline")
 
         return {
-            "message": "PDF uploaded successfully",
-            "data": result
+            "message": "PDF uploaded and processed successfully",
+            "s3_data": s3_result,
+            "rag_data": rag_result
         }
 
     except Exception as e:
@@ -185,7 +224,7 @@ async def list_pdfs():
 @app.delete("/api/pdfs/{s3_key:path}")
 async def delete_pdf(s3_key: str):
     """
-    Delete a PDF file from S3.
+    Delete a PDF file from S3 and remove its vectors from Pinecone.
 
     Args:
         s3_key: S3 key of the file to delete
@@ -194,11 +233,19 @@ async def delete_pdf(s3_key: str):
         dict: Confirmation message
     """
     try:
+        # Extract file name from s3_key
+        file_name = s3_key.split('/')[-1] if '/' in s3_key else s3_key
+
+        # Delete from S3
         await s3_service.delete_pdf(s3_key)
 
+        # Delete from Pinecone
+        pinecone_result = await pinecone_service.delete_by_file(file_name)
+
         return {
-            "message": "PDF deleted successfully",
-            "s3_key": s3_key
+            "message": "PDF deleted successfully from S3 and Pinecone",
+            "s3_key": s3_key,
+            "pinecone_result": pinecone_result
         }
 
     except Exception as e:
@@ -235,6 +282,45 @@ async def get_download_url(s3_key: str, expiration: int = 3600):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate download URL: {str(e)}"
+        )
+
+
+@app.post("/api/rag/query")
+async def query_documents(query: str, top_k: int = 5, file_name: str = None):
+    """
+    Query the RAG system with a natural language question.
+
+    Args:
+        query: Question or query text
+        top_k: Number of results to return (default: 5)
+        file_name: Optional file name to filter results
+
+    Returns:
+        dict: Query results with relevant document chunks
+    """
+    if not query:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Query parameter is required"
+        )
+
+    try:
+        results = await rag_service.query_documents(
+            query_text=query,
+            top_k=top_k,
+            file_filter=file_name
+        )
+
+        return {
+            "message": "Query completed successfully",
+            "data": results
+        }
+
+    except Exception as e:
+        logger.error(f"Query failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to process query: {str(e)}"
         )
 
 

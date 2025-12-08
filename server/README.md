@@ -1,6 +1,6 @@
-# CaseBase Backend
+# CaseBase Server
 
-FastAPI backend for the CaseBase platform with AWS S3 integration for PDF document management.
+FastAPI server for the CaseBase platform with AWS S3 integration for PDF document management.
 
 ## Features
 
@@ -29,13 +29,13 @@ FastAPI backend for the CaseBase platform with AWS S3 integration for PDF docume
 ### 1. Install Dependencies
 
 ```bash
-cd backend
+cd server
 pip install -r requirements.txt
 ```
 
 ### 2. Configure Environment Variables
 
-Create a `.env` file in the `backend` directory:
+Create a `.env` file in the `server` directory:
 
 ```bash
 cp .env.example .env
@@ -80,7 +80,7 @@ If you want to access files directly from the browser, configure CORS on your S3
 ### 5. Run the Server
 
 ```bash
-# From the backend directory
+# From the server directory
 python main.py
 
 # Or using uvicorn directly
@@ -142,7 +142,7 @@ curl -X GET "http://localhost:8000/api/pdfs/pdfs/20231208_120000_document.pdf/do
 ## Project Structure
 
 ```
-backend/
+server/
 ├── main.py              # FastAPI application and endpoints
 ├── config.py            # Configuration and settings
 ├── s3_service.py        # AWS S3 service layer
