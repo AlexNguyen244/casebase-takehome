@@ -32,5 +32,5 @@ services:
       - key: SENDGRID_FROM_EMAIL
         value: noreply@casebase.com
       - key: ALLOWED_ORIGINS
-        value: https://AlexNguyen244.github.io
+        value: https://alexnguyen244.github.io
     healthCheckPath: /health
