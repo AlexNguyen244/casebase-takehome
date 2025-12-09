@@ -427,7 +427,7 @@ async def chat_with_documents(request: ChatRequest):
         history = [{"role": msg.role, "content": msg.content} for msg in request.conversation_history]
 
         # Check if user wants to send existing documents via email (not create PDF)
-        send_docs_intent = await chat_service.detect_send_documents_intent(request.message)
+        send_docs_intent = await chat_service.detect_send_documents_intent(request.message, history)
 
         if send_docs_intent["wants_send_docs"]:
             # User wants to send existing documents
@@ -607,10 +607,10 @@ Your response:"""
                 }
 
         # Check if user wants to email the PDF
-        email_intent = await chat_service.detect_email_intent(request.message)
+        email_intent = await chat_service.detect_email_intent(request.message, history)
 
         # Check if user is requesting PDF creation using semantic detection
-        pdf_intent = await chat_service.detect_pdf_creation_intent(request.message)
+        pdf_intent = await chat_service.detect_pdf_creation_intent(request.message, history)
 
         if pdf_intent["is_pdf_request"]:
             logger.info(f"PDF creation request detected. Type: {pdf_intent['type']}, Confidence: {pdf_intent.get('confidence', 0):.3f}")
@@ -688,9 +688,21 @@ Format your response in clean markdown with proper headers (##), bullet points, 
                 # Extract the actual content topic from the user's message
                 logger.info(f"Extracting content topic from: {request.message}")
 
-                topic_extraction_prompt = f"""Extract the main topic/subject from this user request, removing any mention of PDF creation or emailing.
+                # Build context from conversation history for topic extraction
+                history_context = ""
+                if history and len(history) > 0:
+                    recent_history = history[-6:]  # Last 3 exchanges
+                    history_text = "\n".join([
+                        f"{msg.get('role', 'user').capitalize()}: {msg.get('content', '')}"
+                        for msg in recent_history
+                    ])
+                    history_context = f"\n\nCONVERSATION HISTORY:\n{history_text}\n"
 
-User request: "{request.message}"
+                topic_extraction_prompt = f"""Extract the main topic/subject from this user request, removing any mention of PDF creation or emailing.
+{history_context}
+Current user request: "{request.message}"
+
+Important: If the user uses pronouns like "it", "that", "this", look at the conversation history to understand what they're referring to.
 
 Return ONLY the core topic that the user wants information about. Remove phrases like:
 - "Create a PDF"
@@ -703,6 +715,8 @@ Examples:
 - "Create a pdf on Alex and his fit for Casebase and email to alex@email.com" → "Alex and his fit for Casebase"
 - "Generate a PDF about healthcare policies" → "healthcare policies"
 - "Make a PDF comparing the two resumes" → "comparing the two resumes"
+- Previous: "Tell me about Alex's skills", Current: "Create a PDF about that" → "Alex's skills"
+- Previous: "What does the resume say?", Current: "Generate a PDF on it" → "the resume"
 
 Your response (topic only):"""
 

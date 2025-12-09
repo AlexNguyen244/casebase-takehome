@@ -178,25 +178,37 @@ CONTEXT FROM DOCUMENTS:
 
 Remember: Only use information from the context above to answer questions. Provide direct, natural answers without mentioning document numbers or labels."""
 
-    async def detect_email_intent(self, message: str) -> Dict:
+    async def detect_email_intent(self, message: str, conversation_history: Optional[List[Dict]] = None) -> Dict:
         """
         Detect if the user wants to email a PDF and extract the email address.
 
         Args:
             message: User's message
+            conversation_history: Previous messages in the conversation
 
         Returns:
             Dictionary with 'wants_email' bool and 'email_address' string (or None)
         """
         try:
+            # Build context from conversation history
+            context = ""
+            if conversation_history and len(conversation_history) > 0:
+                recent_history = conversation_history[-6:]  # Last 3 exchanges
+                history_text = "\n".join([
+                    f"{msg.get('role', 'user').capitalize()}: {msg.get('content', '')}"
+                    for msg in recent_history
+                ])
+                context = f"\n\nCONVERSATION HISTORY:\n{history_text}\n"
+
             # Use LLM to detect email intent and extract email address
             classifier_prompt = f"""You are an email intent detector.
-
+{context}
 Analyze this user message and determine:
 1. Does the user want to EMAIL a PDF (not just create/download it)?
 2. If yes, what email address do they want it sent to?
+3. Use the conversation history for context if the user says "it" or "that"
 
-User message: "{message}"
+Current user message: "{message}"
 
 Respond in this EXACT format:
 - If they want to email: "EMAIL: their@email.com"
@@ -206,6 +218,7 @@ Examples:
 - "Send the PDF to john@example.com" → EMAIL: john@example.com
 - "Email this to alex@test.com" → EMAIL: alex@test.com
 - "Create a PDF and email it to me at user@domain.org" → EMAIL: user@domain.org
+- Previous: "Create a PDF about Alex", Current: "Send it to me at test@email.com" → EMAIL: test@email.com
 - "Create a PDF of our conversation" → NO_EMAIL
 - "Generate a PDF" → NO_EMAIL
 
@@ -214,7 +227,7 @@ Your response:"""
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "You are an email intent detector. Extract email addresses accurately."},
+                    {"role": "system", "content": "You are an email intent detector. Extract email addresses accurately. Use conversation context."},
                     {"role": "user", "content": classifier_prompt}
                 ],
                 temperature=0,
@@ -241,23 +254,35 @@ Your response:"""
             logger.error(f"Error in email intent detection: {str(e)}")
             return {"wants_email": False, "email_address": None}
 
-    async def detect_pdf_creation_intent(self, message: str) -> Dict:
+    async def detect_pdf_creation_intent(self, message: str, conversation_history: Optional[List[Dict]] = None) -> Dict:
         """
         Detect if the user is requesting PDF creation using an LLM intent classifier.
 
         Args:
             message: User's message
+            conversation_history: Previous messages in the conversation
 
         Returns:
             Dictionary with 'is_pdf_request' bool and 'type' ('history', 'vector_content', or None)
         """
         try:
+            # Build context from conversation history
+            context = ""
+            if conversation_history and len(conversation_history) > 0:
+                recent_history = conversation_history[-6:]  # Last 3 exchanges
+                history_text = "\n".join([
+                    f"{msg.get('role', 'user').capitalize()}: {msg.get('content', '')}"
+                    for msg in recent_history
+                ])
+                context = f"\n\nCONVERSATION HISTORY:\n{history_text}\n"
+
             # Use LLM as an intent classifier
             classifier_prompt = f"""You are an intent classifier for a document chatbot system.
-
+{context}
 Analyze the user's message and determine their intent:
+- Use conversation history for context if the user says "it", "that", or refers to something previously mentioned
 
-User message: "{message}"
+Current user message: "{message}"
 
 Respond with ONLY ONE of these three options:
 - "history" - if the user wants to create a PDF of the conversation/chat history
@@ -270,6 +295,8 @@ Examples:
 - "What companies are mentioned?" → chat
 - "Export this chat to PDF" → history
 - "Make a PDF about AI from the documents" → vector_content
+- Previous: "Tell me about Alex's skills", Current: "Create a PDF about that" → vector_content
+- Previous: "What does the document say?", Current: "Generate a PDF of it" → vector_content
 - "Tell me about the project" → chat
 
 Answer with only one word: history, vector_content, or chat."""
@@ -277,7 +304,7 @@ Answer with only one word: history, vector_content, or chat."""
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "You are a precise intent classifier. Respond with only one word."},
+                    {"role": "system", "content": "You are a precise intent classifier. Respond with only one word. Use conversation context."},
                     {"role": "user", "content": classifier_prompt}
                 ],
                 temperature=0,  # Use 0 for deterministic classification
@@ -311,25 +338,36 @@ Answer with only one word: history, vector_content, or chat."""
             # Fail safe: if classifier fails, treat as normal chat
             return {"is_pdf_request": False, "type": None}
 
-    async def detect_send_documents_intent(self, message: str) -> Dict:
+    async def detect_send_documents_intent(self, message: str, conversation_history: Optional[List[Dict]] = None) -> Dict:
         """
         Detect if the user wants to send/email existing documents (not create a PDF).
 
         Args:
             message: User's message
+            conversation_history: Previous messages in the conversation
 
         Returns:
             Dictionary with 'wants_send_docs' bool, 'email_address' string, and 'topic' string
         """
         try:
-            classifier_prompt = f"""You are an intent detector for a document management system.
+            # Build context from conversation history
+            context = ""
+            if conversation_history and len(conversation_history) > 0:
+                recent_history = conversation_history[-6:]  # Last 3 exchanges
+                history_text = "\n".join([
+                    f"{msg.get('role', 'user').capitalize()}: {msg.get('content', '')}"
+                    for msg in recent_history
+                ])
+                context = f"\n\nCONVERSATION HISTORY:\n{history_text}\n"
 
+            classifier_prompt = f"""You are an intent detector for a document management system.
+{context}
 Analyze this user message and determine:
 1. Does the user want to SEND/EMAIL existing documents (not create a new PDF)?
 2. If yes, what email address?
-3. What topic/subject are they asking about?
+3. What topic/subject are they asking about? Use conversation history if they say "it", "that", or "them"
 
-User message: "{message}"
+Current user message: "{message}"
 
 Respond in this EXACT format:
 - If they want to send documents: "SEND_DOCS|email@example.com|topic description"
@@ -339,6 +377,7 @@ Examples:
 - "Send me all documents relating to CaseBase to alex@email.com" → SEND_DOCS|alex@email.com|CaseBase
 - "Email me documents about the resumes to john@test.com" → SEND_DOCS|john@test.com|resumes
 - "Can you send the job description files to me at user@domain.org" → SEND_DOCS|user@domain.org|job description
+- Previous: "Tell me about healthcare docs", Current: "Send them to alex@email.com" → SEND_DOCS|alex@email.com|healthcare
 - "Create a PDF about Alex" → NO_SEND (this is PDF creation, not sending existing docs)
 - "What documents do you have?" → NO_SEND (just asking, not requesting to send)
 
@@ -347,7 +386,7 @@ Your response:"""
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "You are an intent detector. Extract email addresses and topics accurately."},
+                    {"role": "system", "content": "You are an intent detector. Extract email addresses and topics accurately. Use conversation context."},
                     {"role": "user", "content": classifier_prompt}
                 ],
                 temperature=0,
