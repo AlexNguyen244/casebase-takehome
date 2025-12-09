@@ -15,7 +15,10 @@ from embedding_service import EmbeddingService
 from pinecone_service import PineconeService
 from rag_service import RAGService
 from chat_service import ChatService
+from pdf_generator import pdf_generator
 from pydantic import BaseModel
+from fastapi.responses import StreamingResponse
+import io
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -384,22 +387,212 @@ class ChatRequest(BaseModel):
     top_k: Optional[int] = 5
 
 
+class PDFGenerateRequest(BaseModel):
+    prompt: str = None
+    response: str = None
+    conversation_history: Optional[List[ChatMessage]] = []
+    title: Optional[str] = None
+
+
 @app.post("/api/chat")
 async def chat_with_documents(request: ChatRequest):
     """
     Chat with the AI assistant using RAG.
+    Also detects PDF creation requests and handles them automatically.
 
     Args:
         request: Chat request with message and optional history
 
     Returns:
-        dict: AI response with sources and metadata
+        dict: AI response with sources and metadata, or PDF generation result
     """
     try:
         # Convert Pydantic models to dicts for the chat service
         history = [{"role": msg.role, "content": msg.content} for msg in request.conversation_history]
 
-        # Call chat service
+        # Check if user is requesting PDF creation using semantic detection
+        pdf_intent = await chat_service.detect_pdf_creation_intent(request.message)
+
+        if pdf_intent["is_pdf_request"]:
+            logger.info(f"PDF creation request detected. Type: {pdf_intent['type']}, Confidence: {pdf_intent.get('confidence', 0):.3f}")
+
+            # Generate the PDF based on type
+            if pdf_intent["type"] == "history":
+                # Create PDF from conversation history
+                if not history or len(history) == 0:
+                    return {
+                        "success": True,
+                        "data": {
+                            "message": "I'd love to create a PDF of our conversation, but we don't have any chat history yet. Please have a conversation with me first!",
+                            "sources": [],
+                            "is_pdf_response": False
+                        }
+                    }
+
+                # Generate AI summary of the conversation
+                logger.info("Generating AI summary of conversation history")
+
+                # Build conversation context for summarization
+                conversation_text = []
+                for msg in history:
+                    role = msg.get('role', 'user')
+                    content = msg.get('content', '')
+                    if role == 'user':
+                        conversation_text.append(f"User: {content}")
+                    elif role == 'assistant':
+                        conversation_text.append(f"Assistant: {content}")
+
+                conversation_context = "\n\n".join(conversation_text)
+
+                # Create summarization prompt
+                summary_prompt = f"""You are tasked with creating a comprehensive summary document of a conversation between a user and an AI assistant.
+
+CONVERSATION HISTORY:
+{conversation_context}
+
+Please create a well-structured summary document that includes:
+
+1. **Overview** - A brief overview of what was discussed (2-3 sentences)
+
+2. **Key Topics Discussed** - List the main topics or questions that were covered in bullet points
+
+3. **Important Information** - Highlight any important facts, findings, or insights that were shared
+
+4. **Action Items or Conclusions** (if any) - Note any decisions made, recommendations given, or next steps mentioned
+
+Format your response in clean markdown with proper headers (##), bullet points, and bold text where appropriate. Make it professional and easy to read."""
+
+                # Generate summary using OpenAI
+                summary_response = await chat_service.client.chat.completions.create(
+                    model=chat_service.model,
+                    messages=[
+                        {"role": "system", "content": "You are a professional document summarizer. Create clear, well-structured summaries."},
+                        {"role": "user", "content": summary_prompt}
+                    ],
+                    temperature=0.7,
+                    max_tokens=2000
+                )
+
+                conversation_summary = summary_response.choices[0].message.content
+
+                logger.info("Summary generated successfully")
+
+                # Create PDF from the summary
+                pdf_bytes = pdf_generator.generate_from_prompt(
+                    prompt="Conversation Summary",
+                    response=conversation_summary
+                )
+                filename = "conversation_summary.pdf"
+
+            elif pdf_intent["type"] == "vector_content":
+                # Create PDF from vector storage content
+                # First, get the actual query by removing PDF-related phrases
+                query = request.message
+
+                # Generate response to get the content from vector store
+                logger.info(f"Retrieving content from vector store for: {query}")
+
+                # Get embedding for the query
+                query_embedding = await embedding_service.generate_embedding(query)
+
+                # Retrieve relevant chunks from Pinecone
+                metadata_filter = {"file_name": request.file_filter} if request.file_filter else None
+                results = await pinecone_service.query(
+                    query_embedding=query_embedding,
+                    top_k=10,  # Get more chunks for comprehensive PDF
+                    filter=metadata_filter
+                )
+
+                if not results or len(results) == 0:
+                    return {
+                        "success": True,
+                        "data": {
+                            "message": "I couldn't find any relevant content in the documents to create a PDF. Please try a different query or upload documents first.",
+                            "sources": [],
+                            "is_pdf_response": False
+                        }
+                    }
+
+                # Build context from retrieved chunks
+                context_parts = []
+                for result in results:
+                    metadata = result.get("metadata", {})
+                    chunk_text = metadata.get("chunk_text", "")
+                    context_parts.append(chunk_text)
+
+                context = "\n\n".join(context_parts)
+
+                # Generate AI summary of the content
+                system_prompt = f"""You are an AI assistant. Provide a comprehensive summary and analysis based on the following document content.
+
+DOCUMENT CONTENT:
+{context}
+
+Create a well-structured response that summarizes and explains the key information."""
+
+                response = await chat_service.client.chat.completions.create(
+                    model=chat_service.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": query}
+                    ],
+                    temperature=0.7,
+                    max_tokens=2000
+                )
+
+                ai_summary = response.choices[0].message.content
+
+                # Create PDF with the query and AI summary
+                pdf_bytes = pdf_generator.generate_from_prompt(
+                    prompt=query,
+                    response=ai_summary
+                )
+                filename = "document_content.pdf"
+
+            else:
+                # Fallback - shouldn't reach here
+                return {
+                    "success": True,
+                    "data": {
+                        "message": "I couldn't determine what type of PDF you want. Please specify if you want a PDF of our conversation or content from the documents.",
+                        "sources": [],
+                        "is_pdf_response": False
+                    }
+                }
+
+            # Upload PDF to S3
+            from datetime import datetime
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            s3_key = f"generated_pdfs/{timestamp}_{filename}"
+
+            s3_service.s3_client.put_object(
+                Bucket=s3_service.bucket_name,
+                Key=s3_key,
+                Body=pdf_bytes,
+                ContentType="application/pdf",
+                Metadata={
+                    'generated_at': timestamp,
+                    'type': pdf_intent["type"]
+                }
+            )
+
+            logger.info(f"PDF uploaded to S3: {s3_key}")
+
+            # Return download URL
+            download_url = f"http://localhost:8000/api/pdfs/view/{s3_key}"
+
+            return {
+                "success": True,
+                "data": {
+                    "message": f"I've created your PDF! You can download it here: [Download PDF]({download_url})",
+                    "sources": [],
+                    "is_pdf_response": True,
+                    "pdf_url": download_url,
+                    "s3_key": s3_key
+                }
+            }
+
+        # Normal chat flow (not a PDF request)
         result = await chat_service.chat_with_documents(
             message=request.message,
             conversation_history=history if history else None,
@@ -417,6 +610,59 @@ async def chat_with_documents(request: ChatRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to process chat: {str(e)}"
+        )
+
+
+@app.post("/api/generate-pdf")
+async def generate_pdf(request: PDFGenerateRequest):
+    """
+    Generate a PDF from either a prompt/response pair or chat history.
+
+    Args:
+        request: PDF generation request with either prompt/response or conversation history
+
+    Returns:
+        StreamingResponse: PDF file
+    """
+    try:
+        # Determine which generation method to use
+        if request.prompt and request.response:
+            # Generate from prompt/response
+            pdf_bytes = pdf_generator.generate_from_prompt(
+                prompt=request.prompt,
+                response=request.response
+            )
+            filename = "casebase_report.pdf"
+        elif request.conversation_history and len(request.conversation_history) > 0:
+            # Generate from chat history
+            messages = [{"role": msg.role, "content": msg.content} for msg in request.conversation_history]
+            pdf_bytes = pdf_generator.generate_from_chat_history(
+                messages=messages,
+                title=request.title
+            )
+            filename = request.title.replace(" ", "_") + ".pdf" if request.title else "conversation_history.pdf"
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Must provide either prompt/response or conversation_history"
+            )
+
+        # Return PDF as download
+        return StreamingResponse(
+            io.BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}"
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"PDF generation failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate PDF: {str(e)}"
         )
 
 

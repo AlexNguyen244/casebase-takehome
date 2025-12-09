@@ -162,6 +162,14 @@ const Chatbot = ({ uploadedPDFs }) => {
                       ol: ({node, ...props}) => <ol className="list-decimal ml-4 mb-2" {...props} />,
                       li: ({node, ...props}) => <li className="mb-1" {...props} />,
                       code: ({node, ...props}) => <code className="bg-gray-200 px-1 rounded" {...props} />,
+                      a: ({node, ...props}) => (
+                        <a
+                          className="text-blue-600 hover:text-blue-800 underline font-semibold"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          {...props}
+                        />
+                      ),
                     }}
                   >
                     {message.text}

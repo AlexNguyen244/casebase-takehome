@@ -170,6 +170,76 @@ CONTEXT FROM DOCUMENTS:
 
 Remember: Only use information from the context above to answer questions. Provide direct, natural answers without mentioning document numbers or labels."""
 
+    async def detect_pdf_creation_intent(self, message: str) -> Dict:
+        """
+        Detect if the user is requesting PDF creation using an LLM intent classifier.
+
+        Args:
+            message: User's message
+
+        Returns:
+            Dictionary with 'is_pdf_request' bool and 'type' ('history', 'vector_content', or None)
+        """
+        try:
+            # Use LLM as an intent classifier
+            classifier_prompt = f"""You are an intent classifier for a document chatbot system.
+
+Analyze the user's message and determine their intent:
+
+User message: "{message}"
+
+Respond with ONLY ONE of these three options:
+- "history" - if the user wants to create a PDF of the conversation/chat history
+- "vector_content" - if the user wants to create a PDF from document content/search results
+- "chat" - if the user wants to have a normal conversation (not create a PDF)
+
+Examples:
+- "Create a PDF of our conversation" → history
+- "Generate a PDF from the documents about healthcare" → vector_content
+- "What companies are mentioned?" → chat
+- "Export this chat to PDF" → history
+- "Make a PDF about AI from the documents" → vector_content
+- "Tell me about the project" → chat
+
+Answer with only one word: history, vector_content, or chat."""
+
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a precise intent classifier. Respond with only one word."},
+                    {"role": "user", "content": classifier_prompt}
+                ],
+                temperature=0,  # Use 0 for deterministic classification
+                max_tokens=10
+            )
+
+            intent = response.choices[0].message.content.strip().lower()
+
+            logger.info(f"LLM intent classifier result: {intent}")
+
+            # Parse the LLM response
+            if intent == "history":
+                return {
+                    "is_pdf_request": True,
+                    "type": "history"
+                }
+            elif intent == "vector_content":
+                return {
+                    "is_pdf_request": True,
+                    "type": "vector_content"
+                }
+            else:
+                # Default to chat for any other response
+                return {
+                    "is_pdf_request": False,
+                    "type": None
+                }
+
+        except Exception as e:
+            logger.error(f"Error in PDF intent detection: {str(e)}")
+            # Fail safe: if classifier fails, treat as normal chat
+            return {"is_pdf_request": False, "type": None}
+
     async def get_chat_completion_stream(
         self,
         message: str,
