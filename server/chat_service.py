@@ -700,18 +700,22 @@ Analyze this user message and determine:
 Current user message: "{message}"
 
 CRITICAL: This is ONLY for sending SOURCE DOCUMENTS/SOURCE FILES/ORIGINAL DOCUMENTS that were used to generate PDFs.
-- If the user just says "send those", "send them", "email those" WITHOUT mentioning "source" or "original", return NO_SEND_SOURCES
-- The user MUST explicitly mention "source", "source documents", "source files", "original documents", or "documents used to create" for this to trigger
+- If the user just says "send those", "send them", "email those" WITHOUT mentioning "source" (singular or plural) or "original", return NO_SEND_SOURCES
+- The user MUST explicitly mention "source", "sources", "source documents", "source files", "original documents", or "documents used to create" for this to trigger
+- Even singular "source" (e.g., "send me the source") should trigger this intent
 - If they just want to send the generated PDFs themselves, return NO_SEND_SOURCES
 
 Keywords that MUST be present to indicate sending source documents:
+- "Send me the source" (singular or plural)
 - "Send me the sources"
 - "Send the source documents"
 - "Send me the source for that"
+- "Send me the source too"
 - "Email the sources for those PDFs"
 - "Send me the documents used to create that"
 - "Send me the original documents"
 - "Email the source files"
+- "Send the source as well"
 
 Respond in this EXACT format:
 - If they want sources for all PDFs: "SEND_SOURCES|all|email@example.com"
@@ -724,8 +728,12 @@ Examples:
 - "Send me the sources for those PDFs" → SEND_SOURCES|those|[remembered_email]
 - "Email the source documents to alex@email.com" → SEND_SOURCES|all|alex@email.com
 - "Send me the source for that document" → SEND_SOURCES|last_pdf|[remembered_email]
+- "Send me the source" → SEND_SOURCES|last_pdf|[remembered_email]
+- "Send me the source too" → SEND_SOURCES|last_pdf|[remembered_email]
+- "Send the source as well" → SEND_SOURCES|last_pdf|[remembered_email]
 - "Send the sources for the last 2 PDFs to john@test.com" → SEND_SOURCES|last_n|2|john@test.com
 - Previous: "I created 3 PDFs", Current: "Send me the sources for those" → SEND_SOURCES|those|[remembered_email]
+- Previous: "Sent you the PDF", Current: "Send me the source too" → SEND_SOURCES|last_pdf|[remembered_email]
 - "Send me the original documents used to create those PDFs" → SEND_SOURCES|those|[remembered_email]
 - "Send me the PDFs" → NO_SEND_SOURCES (sending PDFs, not sources)
 - "Send those to me" → NO_SEND_SOURCES (no mention of "source", just wants PDFs)
