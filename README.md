@@ -1,190 +1,373 @@
-# CaseBase
+# CaseBase AI Platform
 
-A full-stack application for the CaseBase Community Supervision Platform, featuring PDF document management with AWS S3 storage and an AI-powered chatbot assistant.
+A production-ready full-stack application for intelligent document management featuring RAG (Retrieval-Augmented Generation), AI-powered chat, automatic PDF generation, and email integration.
 
-## Project Structure
+## 🚀 Quick Start
+
+### Using Docker (Recommended)
+
+```bash
+# Backend
+cd server
+cp .env.example .env
+# Edit .env with your API keys
+docker-compose up -d
+
+# Frontend
+cd client
+npm install
+npm start
+```
+
+**Backend**: http://localhost:8000 | **Frontend**: http://localhost:3000
+
+### Manual Setup
+
+See detailed setup instructions in:
+- `server/README.md` - Backend setup
+- `server/QUICKSTART.md` - Fastest backend setup
+- `client/README.md` - Frontend setup
+
+## 📁 Project Structure
 
 ```
-CaseBase/
-├── client/                    # React frontend
+casebase-takehome/
+├── client/                          # React Frontend
 │   ├── public/
 │   │   ├── index.html
 │   │   └── favicon.png
 │   ├── src/
 │   │   ├── components/
-│   │   │   ├── PDFUploader.js    # PDF upload component
-│   │   │   ├── PDFViewer.js       # Document list viewer
-│   │   │   └── Chatbot.js         # AI chatbot interface
-│   │   ├── App.js                 # Main application
-│   │   ├── index.js               # Entry point
-│   │   └── index.css              # Tailwind styles
+│   │   │   ├── PDFUploader.js      # PDF upload with drag-drop
+│   │   │   ├── PDFViewer.js        # Document list & viewer
+│   │   │   └── Chatbot.js          # AI chatbot interface
+│   │   ├── App.js                  # Main application
+│   │   ├── index.js                # Entry point
+│   │   └── index.css               # Tailwind styles
 │   ├── package.json
 │   ├── tailwind.config.js
-│   └── postcss.config.js
+│   └── README.md
 │
-├── server/                    # FastAPI backend
-│   ├── main.py                # API endpoints
-│   ├── s3_service.py          # AWS S3 integration
-│   ├── config.py              # Configuration
-│   ├── requirements.txt       # Python dependencies
-│   ├── .env.example           # Environment template
-│   └── README.md              # Backend documentation
+├── server/                          # FastAPI Backend
+│   ├── main.py                     # API endpoints & orchestration
+│   ├── config.py                   # Configuration settings
+│   │
+│   ├── Services/
+│   │   ├── s3_service.py           # AWS S3 storage
+│   │   ├── pdf_parser.py           # PDF text extraction
+│   │   ├── chunking_service.py     # Document chunking
+│   │   ├── embedding_service.py    # OpenAI embeddings
+│   │   ├── pinecone_service.py     # Vector database
+│   │   ├── rag_service.py          # RAG pipeline
+│   │   ├── chat_service.py         # AI chat with intent detection
+│   │   ├── pdf_generator.py        # PDF creation
+│   │   └── email_service.py        # SendGrid integration
+│   │
+│   ├── Docker/
+│   │   ├── Dockerfile
+│   │   ├── docker-compose.yml
+│   │   ├── .dockerignore
+│   │   └── validate-docker.sh
+│   │
+│   ├── Documentation/
+│   │   ├── README.md               # Complete backend docs
+│   │   ├── QUICKSTART.md           # Quick reference
+│   │   ├── RAG_README.md           # RAG architecture
+│   │   └── DOCKER.md               # Docker guide
+│   │
+│   └── requirements.txt
 │
-└── README.md                  # This file
+├── INTEGRATION.md                   # Frontend-Backend integration
+└── README.md                        # This file
 ```
 
-## Features
+## ✨ Features
 
 ### Frontend (React)
-- **PDF Upload**: Drag-and-drop or click to upload multiple PDF files
-- **Document Management**: View all uploaded documents with metadata
-- **Delete Functionality**: Remove documents from storage
-- **AI Chatbot (Casey)**: Interactive chatbot interface
+- **PDF Upload**: Drag-and-drop or click to upload multiple PDFs
+- **Document Management**: View, search, and manage documents
+- **PDF Viewer**: In-browser PDF viewing with proxy streaming
+- **AI Chatbot (Casey)**: Natural language chat with documents
+- **Real-time Updates**: Loading states and progress indicators
 - **Responsive Design**: Built with Tailwind CSS
+- **Modern UI**: Clean, intuitive interface
 
 ### Backend (FastAPI)
-- **AWS S3 Integration**: Secure cloud storage for PDFs
-- **RESTful API**: Complete CRUD operations for PDFs
-- **File Validation**: Ensures only PDF files are uploaded
-- **Presigned URLs**: Secure temporary download links
-- **CORS Enabled**: Ready for frontend integration
 
-## Tech Stack
+#### Core Features
+- **RAG Pipeline**: Automatic document processing with vector embeddings
+- **AI Chat**: GPT-4o-mini powered conversational interface
+- **Smart PDF Generation**: Create PDFs from chat or document content
+- **Email Integration**: Send PDFs and documents via SendGrid
+- **Vector Search**: Semantic search with Pinecone
+- **Source Attribution**: AI tracks and cites source documents
+
+#### Advanced Capabilities
+- **Multi-Intent Detection**: Automatically handles chat, PDF creation, and email requests
+- **AI Document Filtering**: Intelligently filters relevant documents
+- **Markdown Support**: Full markdown rendering in generated PDFs
+- **Source Inclusion**: PDFs list source documents at the end
+- **Docker Support**: Production-ready containerization
+- **Health Checks**: Automated monitoring and validation
+
+## 🛠️ Tech Stack
 
 ### Frontend
-- React 18.2
-- Tailwind CSS 3.3
-- Lucide React (icons)
-- React Scripts 5.0
+- **React** 18.2
+- **Tailwind CSS** 3.3
+- **Lucide React** (icons)
+- **Axios** (HTTP client)
 
 ### Backend
-- FastAPI 0.104.1
-- Boto3 (AWS SDK)
-- Python 3.8+
-- Uvicorn (ASGI server)
+- **Framework**: FastAPI 0.115+
+- **AI/ML**: OpenAI GPT-4o-mini, Langchain, Transformers
+- **Vector DB**: Pinecone
+- **Storage**: AWS S3 (Boto3)
+- **Email**: SendGrid
+- **PDF**: PDFPlumber, ReportLab
+- **Runtime**: Python 3.11+, Uvicorn
+- **Container**: Docker & Docker Compose
 
-## Quick Start
+## 📋 Prerequisites
 
-### Prerequisites
-- Node.js 14+ and npm
-- Python 3.8+
-- AWS Account with S3 access
+- **Node.js 14+** and npm
+- **Python 3.11+** (or Docker)
+- **AWS Account** with S3 access
+- **OpenAI API Key**
+- **Pinecone Account**
+- **SendGrid API Key** (optional, for email features)
 
-### 1. Frontend Setup
+## ⚡ Quick Start
 
+### Option 1: Docker (Recommended)
+
+```bash
+# Backend
+cd server
+cp .env.example .env
+# Edit .env with your API keys (AWS, OpenAI, Pinecone, SendGrid)
+docker-compose up -d
+
+# Frontend
+cd ../client
+npm install
+npm start
+```
+
+### Option 2: Manual Setup
+
+**Backend:**
+```bash
+cd server
+pip install -r requirements.txt
+cp .env.example .env
+# Edit .env with your API keys
+python main.py
+```
+
+**Frontend:**
 ```bash
 cd client
 npm install
 npm start
 ```
 
-The React app will open at [http://localhost:3000](http://localhost:3000)
+**Endpoints:**
+- Frontend: http://localhost:3000
+- Backend API: http://localhost:8000
+- API Docs: http://localhost:8000/docs
 
-### 2. Backend Setup
+## 📡 API Endpoints
 
-```bash
-cd server
-pip install -r requirements.txt
+### Document Management
+- `POST /api/pdfs/upload` - Upload PDF (auto-processes through RAG)
+- `POST /api/pdfs/upload-multiple` - Upload multiple PDFs
+- `GET /api/pdfs` - List all PDFs
+- `DELETE /api/pdfs/{s3_key}` - Delete PDF (removes from S3 and Pinecone)
+- `GET /api/pdfs/view/{s3_key}` - Stream PDF for viewing
 
-# Configure AWS credentials
-cp .env.example .env
-# Edit .env with your AWS credentials
+### AI & RAG
+- `POST /api/rag/query` - Query documents with semantic search
+- `POST /api/chat` - AI chat with multi-intent detection
+  - Normal chat queries
+  - PDF creation requests
+  - Email sending requests
+  - Document sending requests
 
-# Create S3 bucket
-aws s3 mb s3://casebase-pdfs --region us-east-1
-
-# Run the server
-python main.py
-```
-
-The API will be available at [http://localhost:8000](http://localhost:8000)
-
-## API Documentation
-
-Once the backend is running, visit:
+### API Documentation
 - **Swagger UI**: http://localhost:8000/docs
 - **ReDoc**: http://localhost:8000/redoc
 
-## API Endpoints
+## 💬 Example Usage
 
-- `POST /api/pdfs/upload` - Upload single PDF
-- `POST /api/pdfs/upload-multiple` - Upload multiple PDFs
-- `GET /api/pdfs` - List all PDFs
-- `DELETE /api/pdfs/{s3_key}` - Delete a PDF
-- `GET /api/pdfs/{s3_key}/download-url` - Get presigned download URL
+### Chat with Documents
+```bash
+curl -X POST http://localhost:8000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "What experience does Alex have with AWS?"}'
+```
 
-## Component Overview
+### Create PDF from Documents
+```bash
+curl -X POST http://localhost:8000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Create a PDF comparing the two resumes"}'
+```
+
+### Email PDF
+```bash
+curl -X POST http://localhost:8000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Create a PDF on Alex and email to user@example.com"}'
+```
+
+### Send Existing Documents
+```bash
+curl -X POST http://localhost:8000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Send all documents about Alex to user@example.com"}'
+```
+
+## 🎨 Frontend Components
 
 ### PDFUploader
 - Drag-and-drop file upload
 - Multiple PDF file support
-- Visual feedback and validation
+- Loading states with visual feedback
+- Upload progress indicators
 
 ### PDFViewer
-- List of all uploaded documents
-- File metadata display (name, size, upload time)
-- Delete functionality with hover effects
+- Document list with metadata
+- In-browser PDF viewing
+- Delete functionality
+- Search and filter capabilities
 
-### Chatbot
-- Interactive chat interface
-- Message history and typing indicator
-- Context-aware responses
-- Ready for backend integration
+### Chatbot (Casey)
+- Natural language interface
+- Chat with your documents
+- Automatic PDF creation detection
+- Email integration
+- Conversation history
+- Typing indicators
 
-## Configuration
+## ⚙️ Configuration
 
-### Frontend
-No configuration needed for basic setup. The app is configured to work with the backend at `http://localhost:8000`.
+### Backend Environment Variables
 
-### Backend
-Required environment variables in `server/.env`:
+Create `server/.env` with:
 
 ```env
-AWS_ACCESS_KEY_ID=your_access_key
-AWS_SECRET_ACCESS_KEY=your_secret_key
+# AWS Configuration
+AWS_ACCESS_KEY_ID=your_aws_access_key
+AWS_SECRET_ACCESS_KEY=your_aws_secret_key
 AWS_REGION=us-east-1
-S3_BUCKET_NAME=casebase-pdfs
+S3_BUCKET_NAME=your-bucket-name
+
+# OpenAI Configuration
+OPENAI_API_KEY=your_openai_api_key
+
+# Pinecone Configuration
+PINECONE_API_KEY=your_pinecone_api_key
+PINECONE_INDEX_NAME=casebase-documents
+PINECONE_DIMENSION=1536
+PINECONE_CLOUD=aws
+PINECONE_REGION=us-east-1
+
+# SendGrid Configuration (Optional)
+SENDGRID_API_KEY=your_sendgrid_api_key
+SENDGRID_FROM_EMAIL=noreply@casebase.com
+
+# CORS Configuration
 ALLOWED_ORIGINS=http://localhost:3000
 ```
 
-## Development
+### Frontend
+No additional configuration needed. Connects to backend at `http://localhost:8000`.
+
+## 🔄 How It Works
+
+### RAG Pipeline
+1. Upload PDF → Stored in S3
+2. PDF text extracted using PDFPlumber
+3. Text chunked semantically (400 tokens/chunk)
+4. Chunks embedded using OpenAI
+5. Vectors stored in Pinecone
+6. Query converted to embedding
+7. Semantic search finds relevant chunks
+8. AI generates response with sources
+
+### AI Chat Flow
+1. User sends message
+2. AI detects intent (chat/PDF/email/send docs)
+3. Retrieves relevant document chunks
+4. Generates response using GPT-4o-mini
+5. Tracks source documents used
+6. Executes action (reply/create PDF/send email)
+
+## 🚀 Development
 
 ### Running Both Services
 
-**Terminal 1 (Frontend):**
+**Option 1: Docker**
 ```bash
+cd server && docker-compose up -d
+cd ../client && npm start
+```
+
+**Option 2: Manual**
+```bash
+# Terminal 1 - Backend
+cd server
+python main.py
+
+# Terminal 2 - Frontend
 cd client
 npm start
 ```
 
-**Terminal 2 (Backend):**
-```bash
-cd server
-python main.py
-```
+## 📚 Documentation
 
-## Future Enhancements
+- **Root README** - This file (overview)
+- **server/README.md** - Complete backend documentation
+- **server/QUICKSTART.md** - Quick backend setup
+- **server/RAG_README.md** - RAG architecture details
+- **server/DOCKER.md** - Docker deployment guide
+- **client/README.md** - Frontend documentation
+- **INTEGRATION.md** - Integration notes
 
-- Connect chatbot to AI backend for document analysis
-- PDF text extraction and indexing
-- Vector search for semantic document queries
-- User authentication (JWT)
-- Real-time document processing status
-- Background task processing
-- Rate limiting and file size validation
+## 🔒 Security Considerations
 
-## Security Considerations
+1. **Never commit `.env` files** - Keep credentials secure
+2. **Use IAM roles** in production instead of access keys
+3. **Configure S3 bucket policies** to restrict access
+4. **Enable S3 encryption** for stored files
+5. **Implement authentication** before production deployment
+6. **Validate file uploads** - File type and size limits
+7. **Rate limiting** - Protect API endpoints
+8. **CORS configuration** - Restrict allowed origins
 
-1. Never commit `.env` file with credentials
-2. Use IAM roles in production
-3. Configure S3 bucket policies
-4. Enable S3 encryption
-5. Implement authentication before production deployment
+## 🎯 Future Enhancements
 
-## License
+- User authentication and authorization (JWT)
+- Multi-user support with isolated data
+- Document versioning and history
+- Advanced analytics and usage tracking
+- Real-time collaboration features
+- Multi-language support
+- Streaming chat responses
+- Advanced file type support
+- Background job processing
+- Caching layer for performance
+
+## 📄 License
 
 Private - CaseBase Platform
 
-## Support
+## 💬 Support
 
-For issues or questions, please refer to the documentation in the respective `client/` and `server/` directories.
+For detailed documentation:
+- Backend: See `server/README.md` and `server/QUICKSTART.md`
+- Frontend: See `client/README.md`
+- Integration: See `INTEGRATION.md`
+- Docker: See `server/DOCKER.md`
+- RAG System: See `server/RAG_README.md`

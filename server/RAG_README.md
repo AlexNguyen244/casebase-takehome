@@ -197,13 +197,188 @@ Following the reference implementation in `chunk.py`:
 - **Metadata Rich**: Track source file and page numbers
 - **Scalable**: Pinecone handles millions of vectors
 
+## Chat Service (`chat_service.py`)
+
+The Chat Service extends the RAG system with conversational AI capabilities.
+
+### Features
+
+1. **Chat with Documents**
+   - Uses RAG to retrieve relevant context
+   - Generates AI responses using OpenAI GPT-4o-mini
+   - Tracks source documents used in responses
+
+2. **Intent Detection**
+   - PDF creation intent (conversation history or document content)
+   - Email sending intent
+   - Document sending intent
+
+3. **Source Attribution**
+   - AI explicitly reports which documents it used
+   - Filters out irrelevant documents
+   - Ensures accurate citation
+
+### Usage
+
+```python
+# Chat with documents
+result = await chat_service.chat_with_documents(
+    message="What experience does Alex have with AWS?",
+    conversation_history=[],
+    top_k=5
+)
+
+# Detect PDF creation intent
+intent = await chat_service.detect_pdf_creation_intent(
+    "Create a PDF comparing the two resumes"
+)
+# Returns: {"is_pdf_request": True, "type": "vector_content"}
+
+# Detect email intent
+email_intent = await chat_service.detect_email_intent(
+    "Email this to alex@example.com"
+)
+# Returns: {"wants_email": True, "email_address": "alex@example.com"}
+
+# Detect send documents intent
+send_intent = await chat_service.detect_send_documents_intent(
+    "Send me all documents relating to Alex to alex@example.com"
+)
+# Returns: {"wants_send_docs": True, "email_address": "alex@example.com", "topic": "Alex"}
+```
+
+## PDF Generation (`pdf_generator.py`)
+
+Generates professional PDFs using ReportLab.
+
+### Features
+
+- Markdown support (headers, lists, code blocks, tables)
+- Source document attribution (listed at end of PDF)
+- Professional styling with custom colors
+- Automatic page breaks and spacing
+
+### Usage
+
+```python
+# Generate PDF from prompt/response
+pdf_bytes = pdf_generator.generate_from_prompt(
+    prompt="What is Alex's AWS experience?",
+    response="Alex has 3 years of experience...",
+    source_documents=["AlexNguyen-Resume.pdf"]
+)
+
+# Generate PDF from chat history
+pdf_bytes = pdf_generator.generate_from_chat_history(
+    messages=[
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi there!"}
+    ],
+    title="Conversation Summary"
+)
+```
+
+## Email Service (`email_service.py`)
+
+Sends PDFs and documents via SendGrid.
+
+### Methods
+
+```python
+# Send single PDF
+await email_service.send_pdf_email(
+    to_email="user@example.com",
+    subject="Your Report",
+    pdf_bytes=pdf_bytes,
+    pdf_filename="report.pdf"
+)
+
+# Send multiple documents
+await email_service.send_documents_email(
+    to_email="user@example.com",
+    subject="Requested Documents",
+    documents=[
+        {"bytes": pdf1_bytes, "filename": "doc1.pdf"},
+        {"bytes": pdf2_bytes, "filename": "doc2.pdf"}
+    ]
+)
+```
+
+## Advanced Features
+
+### AI-Powered Document Filtering
+
+When sending existing documents, the system uses AI to filter only relevant documents:
+
+```python
+# User request: "Send me all files relating to Alex to alex@example.com"
+# System:
+# 1. Retrieves chunks about "Alex" from vector DB
+# 2. AI analyzes which documents are actually about Alex
+# 3. Filters out documents that only mention Alex in passing
+# 4. Sends only the relevant documents
+```
+
+### Source Attribution in PDFs
+
+When generating PDFs from document content:
+
+```python
+# 1. Retrieve relevant chunks from vector DB
+# 2. AI generates response using chunks
+# 3. AI reports which source documents it actually used
+# 4. PDF includes "Source Documents" section at the end
+# 5. Only cited sources are listed (not all retrieved documents)
+```
+
+### Multi-Intent Chat Endpoint
+
+The `/api/chat` endpoint automatically handles:
+
+1. **Normal chat**: Returns AI response with sources
+2. **PDF creation**: Generates PDF and returns download link
+3. **Email PDF**: Creates and emails PDF to specified address
+4. **Send documents**: Filters and emails existing documents
+
+All through natural language requests!
+
 ## Testing
 
-Example query flow:
+Example workflows:
+
 ```python
 # Upload a PDF
 response = await client.post("/api/pdfs/upload", files={"file": pdf_file})
 
 # Query the document
 results = await client.post("/api/rag/query?query=What are the key findings?&top_k=3")
+
+# Chat with documents
+chat_response = await client.post("/api/chat", json={
+    "message": "What are the main points?",
+    "conversation_history": []
+})
+
+# Request PDF creation via chat
+pdf_response = await client.post("/api/chat", json={
+    "message": "Create a PDF summarizing the key findings"
+})
+
+# Request PDF via email
+email_response = await client.post("/api/chat", json={
+    "message": "Create a PDF and email to user@example.com"
+})
+
+# Request existing documents
+docs_response = await client.post("/api/chat", json={
+    "message": "Send all documents about AWS to user@example.com"
+})
 ```
+
+## Performance Considerations
+
+- All services use `async/await` for optimal performance
+- Embedding generation is batched for efficiency
+- Pinecone queries are fast (milliseconds)
+- AI responses cached where appropriate
+- Docker deployment for production scalability
