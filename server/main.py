@@ -502,8 +502,39 @@ Format your response in clean markdown with proper headers (##), bullet points, 
 
             elif pdf_intent["type"] == "vector_content":
                 # Create PDF from vector storage content
-                # First, get the actual query by removing PDF-related phrases
-                query = request.message
+                # Extract the actual content topic from the user's message
+                logger.info(f"Extracting content topic from: {request.message}")
+
+                topic_extraction_prompt = f"""Extract the main topic/subject from this user request, removing any mention of PDF creation or emailing.
+
+User request: "{request.message}"
+
+Return ONLY the core topic that the user wants information about. Remove phrases like:
+- "Create a PDF"
+- "Generate a PDF"
+- "Email to"
+- Email addresses
+- Any PDF or email related instructions
+
+Examples:
+- "Create a pdf on Alex and his fit for Casebase and email to alex@email.com" → "Alex and his fit for Casebase"
+- "Generate a PDF about healthcare policies" → "healthcare policies"
+- "Make a PDF comparing the two resumes" → "comparing the two resumes"
+
+Your response (topic only):"""
+
+                topic_response = await chat_service.client.chat.completions.create(
+                    model=chat_service.model,
+                    messages=[
+                        {"role": "system", "content": "You extract topics from user requests. Return only the topic, nothing else."},
+                        {"role": "user", "content": topic_extraction_prompt}
+                    ],
+                    temperature=0,
+                    max_tokens=100
+                )
+
+                query = topic_response.choices[0].message.content.strip()
+                logger.info(f"Extracted content topic: {query}")
 
                 # Generate response to get the content from vector store
                 logger.info(f"Retrieving content from vector store for: {query}")
@@ -529,22 +560,43 @@ Format your response in clean markdown with proper headers (##), bullet points, 
                         }
                     }
 
-                # Build context from retrieved chunks
+                # Build context from retrieved chunks with source labels
                 context_parts = []
+                available_sources = {}  # Map: {filename -> simple_name}
+
                 for result in results:
                     metadata = result.get("metadata", {})
                     chunk_text = metadata.get("chunk_text", "")
-                    context_parts.append(chunk_text)
+                    file_name = metadata.get("file_name", "")
+
+                    if file_name:
+                        # Create simple source name (e.g., "pdfs/Alex_Resume.pdf" -> "Alex_Resume")
+                        simple_name = file_name.split('/')[-1].replace('.pdf', '')
+                        available_sources[simple_name] = file_name
+
+                        # Add labeled chunk
+                        context_parts.append(f"[Source: {simple_name}]\n{chunk_text}")
+                    else:
+                        context_parts.append(chunk_text)
 
                 context = "\n\n".join(context_parts)
 
-                # Generate AI summary of the content
+                logger.info(f"Available source documents: {list(available_sources.keys())}")
+
+                # Generate AI summary with explicit source tracking
                 system_prompt = f"""You are an AI assistant. Provide a comprehensive summary and analysis based on the following document content.
 
 DOCUMENT CONTENT:
 {context}
 
-Create a well-structured response that summarizes and explains the key information."""
+Create a well-structured response that summarizes and explains the key information.
+
+CRITICAL INSTRUCTION: After your summary, you MUST list ONLY the source documents you actually used and referenced in your response.
+- Format: SOURCES_USED: source1, source2, source3
+- Use the exact source names shown in [Source: ...] tags above
+- ONLY include sources you directly referenced or cited in your summary
+- If you didn't use a source, DO NOT include it in the list
+- Be strict and honest about which sources you actually used"""
 
                 response = await chat_service.client.chat.completions.create(
                     model=chat_service.model,
@@ -552,11 +604,39 @@ Create a well-structured response that summarizes and explains the key informati
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": query}
                     ],
-                    temperature=0.7,
+                    temperature=0.3,  # Lower temperature for more consistent source tracking
                     max_tokens=2000
                 )
 
-                ai_summary = response.choices[0].message.content
+                ai_response = response.choices[0].message.content
+
+                # Parse out the sources used and the actual summary
+                if "SOURCES_USED:" in ai_response:
+                    parts = ai_response.split("SOURCES_USED:")
+                    ai_summary = parts[0].strip()
+                    sources_line = parts[1].strip()
+
+                    # Parse the source names (remove any trailing periods or extra whitespace)
+                    used_source_names = [s.strip().rstrip('.').strip() for s in sources_line.split(',')]
+
+                    # Filter out any empty strings
+                    used_source_names = [name for name in used_source_names if name]
+
+                    # Map back to full file paths
+                    source_file_names = set()
+                    for name in used_source_names:
+                        if name in available_sources:
+                            source_file_names.add(available_sources[name])
+                        else:
+                            logger.warning(f"AI reported source '{name}' not found in available sources")
+
+                    logger.info(f"AI explicitly used these sources: {used_source_names}")
+                    logger.info(f"Mapped to {len(source_file_names)} file(s): {source_file_names}")
+                else:
+                    # If AI didn't follow format, don't attach any source documents
+                    ai_summary = ai_response
+                    source_file_names = set()
+                    logger.warning("AI didn't specify sources in the correct format, no source documents will be attached")
 
                 # Create PDF with the query and AI summary
                 pdf_bytes = pdf_generator.generate_from_prompt(
@@ -596,23 +676,65 @@ Create a well-structured response that summarizes and explains the key informati
                     # Determine email subject based on PDF type
                     if pdf_intent["type"] == "history":
                         subject = "Your CaseBase Conversation Summary"
+                        source_pdfs_to_attach = []  # No source documents for conversation history
                     else:
                         subject = "Your CaseBase Document Report"
 
-                    # Send email with PDF attachment
-                    await email_service.send_pdf_email(
-                        to_email=email_address,
-                        subject=subject,
-                        pdf_bytes=pdf_bytes,
-                        pdf_filename=filename
-                    )
+                        # Download source PDFs from S3 for vector_content type
+                        source_pdfs_to_attach = []
+                        if 'source_file_names' in locals() and source_file_names:
+                            logger.info(f"Downloading {len(source_file_names)} source PDFs from S3...")
 
-                    logger.info(f"PDF successfully emailed to {email_address}")
+                            for source_file in source_file_names:
+                                try:
+                                    # Download from S3
+                                    s3_response = s3_service.s3_client.get_object(
+                                        Bucket=s3_service.bucket_name,
+                                        Key=source_file
+                                    )
+                                    source_pdf_bytes = s3_response['Body'].read()
+
+                                    # Extract just the filename from the S3 key
+                                    display_filename = source_file.split('/')[-1]
+
+                                    source_pdfs_to_attach.append({
+                                        'bytes': source_pdf_bytes,
+                                        'filename': display_filename
+                                    })
+
+                                    logger.info(f"Downloaded source PDF: {display_filename}")
+
+                                except Exception as e:
+                                    logger.warning(f"Failed to download source PDF {source_file}: {str(e)}")
+                                    # Continue with other files even if one fails
+
+                    # Send email with PDF attachment(s)
+                    if source_pdfs_to_attach:
+                        # Send with source documents
+                        await email_service.send_pdf_email_with_sources(
+                            to_email=email_address,
+                            subject=subject,
+                            main_pdf_bytes=pdf_bytes,
+                            main_pdf_filename=filename,
+                            source_pdfs=source_pdfs_to_attach
+                        )
+                        attachment_info = f" along with {len(source_pdfs_to_attach)} supporting document(s)"
+                    else:
+                        # Send without source documents
+                        await email_service.send_pdf_email(
+                            to_email=email_address,
+                            subject=subject,
+                            pdf_bytes=pdf_bytes,
+                            pdf_filename=filename
+                        )
+                        attachment_info = ""
+
+                    logger.info(f"PDF successfully emailed to {email_address}{attachment_info}")
 
                     return {
                         "success": True,
                         "data": {
-                            "message": f"✅ Perfect! I've created your PDF and sent it to **{email_address}**. Please check your inbox (and spam folder just in case).",
+                            "message": f"✅ Perfect! I've created your PDF{attachment_info} and sent it to **{email_address}**. Please check your inbox (and spam folder just in case).",
                             "sources": [],
                             "is_pdf_response": True,
                             "email_sent": True,
