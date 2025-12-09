@@ -204,10 +204,10 @@ def init_chat_routes(
                 bulk_send_intent = await chat_service.detect_bulk_pdf_send_intent(request.message, history, remembered_email)
 
             # Only check send_docs_intent if:
-            # 1. bulk_send_intent didn't trigger, OR
-            # 2. There are no recent PDFs
+            # 1. bulk_send_intent didn't trigger, AND
+            # 2. User is NOT asking for sources (to prevent "send source" from triggering vector search)
             # Skip this check if BOTH: (1) previous was PDF creation AND (2) user wants to email
-            skip_send_docs_check = previous_was_pdf_creation and email_intent["wants_email"]
+            skip_send_docs_check = (previous_was_pdf_creation and email_intent["wants_email"]) or user_wants_sources
 
             if not skip_send_docs_check and (not bulk_send_intent or not bulk_send_intent.get("wants_bulk_send")):
                 send_docs_intent = await chat_service.detect_send_documents_intent(request.message, history, remembered_email)
