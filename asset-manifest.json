@@ -1,0 +1,13 @@
+{
+  "files": {
+    "main.css": "/casebase-takehome/static/css/main.b48aff76.css",
+    "main.js": "/casebase-takehome/static/js/main.11281c4c.js",
+    "index.html": "/casebase-takehome/index.html",
+    "main.b48aff76.css.map": "/casebase-takehome/static/css/main.b48aff76.css.map",
+    "main.11281c4c.js.map": "/casebase-takehome/static/js/main.11281c4c.js.map"
+  },
+  "entrypoints": [
+    "static/css/main.b48aff76.css",
+    "static/js/main.11281c4c.js"
+  ]
+}
