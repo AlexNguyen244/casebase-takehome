@@ -5,6 +5,7 @@ Uses OpenAI's GPT models to generate responses based on retrieved document conte
 
 from typing import List, Dict, Optional
 import logging
+import re
 from openai import AsyncOpenAI
 
 from embedding_service import EmbeddingService
@@ -214,11 +215,13 @@ Analyze this user message and determine:
 2. If yes, what email address do they want it sent to?
 3. Use the conversation history for context if the user says "it" or "that"
 4. If user says "email me" or "send to me" without providing an email, use the REMEMBERED EMAIL if available
+5. IMPORTANT: If no email is provided and no remembered email exists, respond with "EMAIL: NONE" - do NOT invent an email address
 
 Current user message: "{message}"
 
 Respond in this EXACT format:
-- If they want to email: "EMAIL: their@email.com"
+- If they want to email AND have an email: "EMAIL: their@email.com"
+- If they want to email BUT no email provided/remembered: "EMAIL: NONE"
 - If they don't want to email: "NO_EMAIL"
 
 Examples:
@@ -228,6 +231,8 @@ Examples:
 - Previous: "Create a PDF about Alex", Current: "Send it to me at test@email.com" → EMAIL: test@email.com
 - Remembered email: "alex@test.com", Current: "Email me that" → EMAIL: alex@test.com
 - Remembered email: "alex@test.com", Current: "Send it to me" → EMAIL: alex@test.com
+- No remembered email, Current: "Send this to my email" → EMAIL: NONE
+- No remembered email, Current: "Email me this" → EMAIL: NONE
 - "Create a PDF of our conversation" → NO_EMAIL
 - "Generate a PDF" → NO_EMAIL
 
@@ -249,6 +254,43 @@ Your response:"""
             # Parse the response
             if result.startswith("EMAIL:"):
                 email_address = result.replace("EMAIL:", "").strip()
+
+                # Check if LLM explicitly said no email was provided
+                if email_address.upper() in ["NONE", "NULL", "N/A", ""]:
+                    logger.info("LLM detected email intent but no email address was provided")
+                    return {
+                        "wants_email": True,
+                        "email_address": None
+                    }
+
+                # Validate that it's an actual email address, not a placeholder or generic text
+                # Check if it's a real email format
+                if not re.search(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', email_address):
+                    # Not a valid email format - treat as no email
+                    logger.warning(f"Invalid email format detected: '{email_address}' - treating as no email provided")
+                    return {
+                        "wants_email": True,
+                        "email_address": None
+                    }
+
+                # Check for placeholder emails that shouldn't be used
+                placeholder_patterns = [
+                    "example",
+                    "placeholder",
+                    "your@",
+                    "user@",
+                    "my email",
+                    "my@email"
+                ]
+                email_lower = email_address.lower()
+                for pattern in placeholder_patterns:
+                    if pattern in email_lower:
+                        logger.warning(f"Placeholder email pattern detected: '{email_address}' - treating as no email provided")
+                        return {
+                            "wants_email": True,
+                            "email_address": None
+                        }
+
                 return {
                     "wants_email": True,
                     "email_address": email_address
@@ -293,19 +335,27 @@ Analyze the user's message and determine their intent:
 
 Current user message: "{message}"
 
+IMPORTANT DISTINCTION:
+- PDF creation: User explicitly asks to CREATE, GENERATE, or MAKE a PDF document
+- Send documents: User asks to FIND, SEND, or EMAIL existing documents/files (NOT creating a new PDF)
+- Chat: User asks questions or has normal conversation
+
 Respond with ONLY ONE of these three options:
-- "history" - if the user wants to create a PDF of the conversation/chat history
-- "vector_content" - if the user wants to create a PDF from document content/search results
-- "chat" - if the user wants to have a normal conversation (not create a PDF)
+- "history" - if the user wants to CREATE a PDF of the conversation/chat history
+- "vector_content" - if the user wants to CREATE a NEW PDF from document content
+- "chat" - if the user wants to have a normal conversation OR send existing documents (NOT create PDF)
 
 Examples:
 - "Create a PDF of our conversation" → history
 - "Generate a PDF from the documents about healthcare" → vector_content
+- "Make a PDF summary about AI" → vector_content
 - "What companies are mentioned?" → chat
 - "Export this chat to PDF" → history
-- "Make a PDF about AI from the documents" → vector_content
 - Previous: "Tell me about Alex's skills", Current: "Create a PDF about that" → vector_content
 - Previous: "What does the document say?", Current: "Generate a PDF of it" → vector_content
+- "Find all documents related to Alex and send me those" → chat (sending existing docs, not creating PDF)
+- "Send me the documents about healthcare" → chat (sending existing docs, not creating PDF)
+- "Email me all files about the project" → chat (sending existing docs, not creating PDF)
 - "Tell me about the project" → chat
 
 Answer with only one word: history, vector_content, or chat."""
@@ -378,24 +428,36 @@ Answer with only one word: history, vector_content, or chat."""
             classifier_prompt = f"""You are an intent detector for a document management system.
 {context}{remembered_email_context}
 Analyze this user message and determine:
-1. Does the user want to SEND/EMAIL existing documents (not create a new PDF)?
+1. Does the user want to SEND/EMAIL existing documents/files (not create a new PDF)?
 2. If yes, what email address? Use REMEMBERED EMAIL if user says "email me" without providing one
 3. What topic/subject are they asking about? Use conversation history if they say "it", "that", or "them"
 
 Current user message: "{message}"
 
+IMPORTANT: Keywords that indicate sending existing documents:
+- "Find documents and send"
+- "Send me documents/files"
+- "Email me documents/files"
+- "Send me all documents about X"
+- "Send those/them to me"
+
+NOT for PDF creation requests (those use "create", "generate", "make" a PDF)
+
 Respond in this EXACT format:
-- If they want to send documents: "SEND_DOCS|email@example.com|topic description"
+- If they want to send existing documents: "SEND_DOCS|email@example.com|topic description"
 - If they don't want to send documents: "NO_SEND"
 
 Examples:
 - "Send me all documents relating to CaseBase to alex@email.com" → SEND_DOCS|alex@email.com|CaseBase
 - "Email me documents about the resumes to john@test.com" → SEND_DOCS|john@test.com|resumes
 - "Can you send the job description files to me at user@domain.org" → SEND_DOCS|user@domain.org|job description
+- "Find all documents related to Alex and send me those too" → SEND_DOCS|[remembered_email]|Alex
+- "Send me the documents about healthcare" → SEND_DOCS|[remembered_email]|healthcare
 - Previous: "Tell me about healthcare docs", Current: "Send them to alex@email.com" → SEND_DOCS|alex@email.com|healthcare
 - Remembered email: "alex@test.com", Current: "Find documents about Alex and email me them" → SEND_DOCS|alex@test.com|Alex
 - Remembered email: "john@test.com", Current: "Send me documents about healthcare" → SEND_DOCS|john@test.com|healthcare
 - "Create a PDF about Alex" → NO_SEND (this is PDF creation, not sending existing docs)
+- "Make a PDF summary" → NO_SEND (this is PDF creation, not sending existing docs)
 - "What documents do you have?" → NO_SEND (just asking, not requesting to send)
 
 Your response:"""
@@ -419,6 +481,12 @@ Your response:"""
                 if len(parts) >= 2:
                     email_address = parts[0].strip()
                     topic = parts[1].strip() if len(parts) > 1 else ""
+
+                    # Check if email_address is a placeholder (not a real email)
+                    if email_address in ["[remembered_email]", "[email]", "REMEMBERED_EMAIL", "email"]:
+                        # Use the remembered email if available, otherwise None
+                        email_address = remembered_email if remembered_email else None
+
                     return {
                         "wants_send_docs": True,
                         "email_address": email_address,

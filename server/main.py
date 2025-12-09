@@ -456,19 +456,28 @@ async def chat_with_documents(request: ChatRequest):
         if remembered_email:
             logger.info(f"Using remembered email address: {remembered_email}")
 
-        # Check if the previous assistant message was a PDF creation
+        # Check if there was a PDF creation in recent history (not just the last message)
         # This helps us understand if "send it" refers to the PDF or documents
         previous_was_pdf_creation = False
         previous_pdf_topic = None
+        previous_pdf_s3_key = None
 
         if history and len(history) >= 2:
-            # Check last assistant message
-            for i in range(len(history) - 1, -1, -1):
+            # Check recent assistant messages (up to last 4 messages) for PDF creation
+            for i in range(len(history) - 1, max(0, len(history) - 5), -1):
                 if history[i].get('role') == 'assistant':
-                    last_assistant_msg = history[i].get('content', '')
-                    # Check if it contains PDF download link or PDF-related text
-                    if 'Download PDF' in last_assistant_msg or 'pdf' in last_assistant_msg.lower() or '/api/pdfs/view/' in last_assistant_msg:
+                    assistant_msg = history[i].get('content', '')
+                    # Check if it contains PDF download link
+                    if 'Download PDF' in assistant_msg or '/api/pdfs/view/' in assistant_msg:
                         previous_was_pdf_creation = True
+
+                        # Extract S3 key from the PDF URL
+                        # URL format: http://localhost:8000/api/pdfs/view/generated_pdfs/20251209_195408_document_content.pdf
+                        s3_key_match = re.search(r'/api/pdfs/view/([^\s\)]+)', assistant_msg)
+                        if s3_key_match:
+                            previous_pdf_s3_key = s3_key_match.group(1)
+                            logger.info(f"Found previous PDF S3 key: {previous_pdf_s3_key}")
+
                         # Try to find the user's request that triggered the PDF
                         if i > 0:
                             for j in range(i - 1, -1, -1):
@@ -476,13 +485,117 @@ async def chat_with_documents(request: ChatRequest):
                                     previous_pdf_topic = history[j].get('content', '')
                                     break
                         logger.info(f"Detected previous PDF creation. Topic: {previous_pdf_topic}")
-                    break
+                        break  # Found the PDF, stop looking
+
+        # Check if user is providing email after being asked for it
+        # Look for messages like "My email is X" or just an email address
+        user_provided_email_only = False
+        provided_email = None
+        was_asked_for_pdf_email = False
+        was_asked_for_docs_email = False
+
+        if re.search(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', request.message):
+            # Check if previous assistant message asked for email
+            if history and len(history) >= 1:
+                for i in range(len(history) - 1, -1, -1):
+                    if history[i].get('role') == 'assistant':
+                        last_assistant_msg = history[i].get('content', '')
+                        if 'email address would you like me to send' in last_assistant_msg.lower():
+                            user_provided_email_only = True
+                            email_match = re.search(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', request.message)
+                            if email_match:
+                                provided_email = email_match.group(0)
+                                logger.info(f"User provided email after being asked: {provided_email}")
+
+                            # Determine what they were asked about
+                            if 'pdf' in last_assistant_msg.lower():
+                                was_asked_for_pdf_email = True
+                            else:
+                                was_asked_for_docs_email = True
+                        break
+
+        # Check email intent first to see if user is trying to email something
+        email_intent = await chat_service.detect_email_intent(request.message, history, remembered_email)
 
         # Check if user wants to send existing documents via email (not create PDF)
-        # Skip this check if previous message was a PDF creation and user is trying to email it
+        # Only skip this check if BOTH: (1) previous was PDF creation AND (2) user wants to email
+        # This ensures "Find documents and send" works even after PDF creation
         send_docs_intent = {"wants_send_docs": False}
-        if not previous_was_pdf_creation:
+        skip_send_docs_check = previous_was_pdf_creation and email_intent["wants_email"]
+
+        if not skip_send_docs_check:
             send_docs_intent = await chat_service.detect_send_documents_intent(request.message, history, remembered_email)
+
+        # If user provided email only after being asked, handle accordingly
+        if user_provided_email_only and provided_email:
+            logger.info(f"User provided email only. was_asked_for_pdf_email={was_asked_for_pdf_email}, previous_was_pdf_creation={previous_was_pdf_creation}, previous_pdf_s3_key={previous_pdf_s3_key}")
+            if was_asked_for_pdf_email and previous_was_pdf_creation and previous_pdf_s3_key:
+                # User was asked for email to send PDF, now they provided it
+                logger.info(f"User provided email for PDF: {provided_email}, sending PDF: {previous_pdf_s3_key}")
+
+                # Check if email service is available
+                if not email_service:
+                    return {
+                        "success": True,
+                        "data": {
+                            "message": "Email service is not configured. Please contact your administrator.",
+                            "sources": [],
+                            "is_pdf_response": False
+                        }
+                    }
+
+                try:
+                    # Download the existing PDF from S3
+                    s3_response = s3_service.s3_client.get_object(
+                        Bucket=s3_service.bucket_name,
+                        Key=previous_pdf_s3_key
+                    )
+                    pdf_bytes = s3_response['Body'].read()
+                    filename = previous_pdf_s3_key.split('/')[-1]
+
+                    # Send email with the PDF
+                    await email_service.send_pdf_email(
+                        to_email=provided_email,
+                        subject="Your CaseBase Document Report",
+                        pdf_bytes=pdf_bytes,
+                        pdf_filename=filename
+                    )
+
+                    return {
+                        "success": True,
+                        "data": {
+                            "message": f"✅ Perfect! I've sent the PDF to **{provided_email}**. Please check your inbox (and spam folder just in case).",
+                            "sources": [],
+                            "is_pdf_response": True,
+                            "email_sent": True,
+                            "email_address": provided_email
+                        }
+                    }
+                except Exception as e:
+                    logger.error(f"Failed to email PDF: {str(e)}")
+                    return {
+                        "success": True,
+                        "data": {
+                            "message": f"I found the PDF but couldn't send it. Error: {str(e)}",
+                            "sources": [],
+                            "is_pdf_response": False
+                        }
+                    }
+
+            elif was_asked_for_docs_email:
+                # Look for the topic from the previous incomplete send request
+                for i in range(len(history) - 1, -1, -1):
+                    if history[i].get('role') == 'user':
+                        prev_user_msg = history[i].get('content', '')
+                        # Check if it was a send documents request
+                        if any(keyword in prev_user_msg.lower() for keyword in ['find', 'send', 'email', 'documents']):
+                            logger.info(f"Retrying send documents with provided email: {provided_email}")
+                            # Recheck send documents intent with the previous message and the new email
+                            send_docs_intent = await chat_service.detect_send_documents_intent(prev_user_msg, history, provided_email)
+                            if send_docs_intent["wants_send_docs"]:
+                                # Override the email address with the one just provided
+                                send_docs_intent["email_address"] = provided_email
+                            break
 
         if send_docs_intent["wants_send_docs"]:
             # User wants to send existing documents
@@ -490,6 +603,18 @@ async def chat_with_documents(request: ChatRequest):
 
             email_address = send_docs_intent["email_address"]
             topic = send_docs_intent["topic"]
+
+            # Check if email address is missing
+            if not email_address or email_address == "":
+                logger.info("Email address missing in send documents request")
+                return {
+                    "success": True,
+                    "data": {
+                        "message": f"I'd be happy to send you documents about {topic}! What email address would you like me to send them to?",
+                        "sources": [],
+                        "is_send_docs_response": False
+                    }
+                }
 
             # Check if email service is available
             if not email_service:
@@ -661,23 +786,81 @@ Your response:"""
                     }
                 }
 
-        # Check if user wants to email the PDF
-        email_intent = await chat_service.detect_email_intent(request.message, history, remembered_email)
-
         # Check if user is requesting PDF creation using semantic detection
         pdf_intent = await chat_service.detect_pdf_creation_intent(request.message, history)
 
         # Special case: If previous message was PDF creation and user wants to email
-        # Treat this as a PDF creation + email request
-        if previous_was_pdf_creation and email_intent["wants_email"]:
-            logger.info(f"User wants to email the previously created PDF")
-            # Extract the topic from the previous PDF creation request
-            if previous_pdf_topic:
-                logger.info(f"Will recreate PDF with topic: {previous_pdf_topic}")
-                # Force PDF creation intent
-                pdf_intent = {
-                    "is_pdf_request": True,
-                    "type": "vector_content"
+        # Send the exact same PDF that was already created
+        if previous_was_pdf_creation and email_intent["wants_email"] and previous_pdf_s3_key:
+            logger.info(f"User wants to email the previously created PDF: {previous_pdf_s3_key}")
+
+            email_address = email_intent["email_address"]
+
+            # Check if email address is missing or invalid
+            if not email_address or email_address == "" or not re.search(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', email_address):
+                logger.info("Email address missing or invalid for PDF email request")
+                return {
+                    "success": True,
+                    "data": {
+                        "message": "I'd be happy to send you the PDF! What email address would you like me to send it to?",
+                        "sources": [],
+                        "is_pdf_response": False
+                    }
+                }
+
+            # Check if email service is available
+            if not email_service:
+                return {
+                    "success": True,
+                    "data": {
+                        "message": "I found the PDF, but email service is not configured. Please contact your administrator to enable email features.",
+                        "sources": [],
+                        "is_pdf_response": False
+                    }
+                }
+
+            try:
+                # Download the existing PDF from S3
+                logger.info(f"Downloading PDF from S3: {previous_pdf_s3_key}")
+                s3_response = s3_service.s3_client.get_object(
+                    Bucket=s3_service.bucket_name,
+                    Key=previous_pdf_s3_key
+                )
+                pdf_bytes = s3_response['Body'].read()
+
+                # Extract filename from S3 key
+                filename = previous_pdf_s3_key.split('/')[-1]
+
+                # Send email with the exact PDF
+                await email_service.send_pdf_email(
+                    to_email=email_address,
+                    subject="Your CaseBase Document Report",
+                    pdf_bytes=pdf_bytes,
+                    pdf_filename=filename
+                )
+
+                logger.info(f"Previously created PDF successfully emailed to {email_address}")
+
+                return {
+                    "success": True,
+                    "data": {
+                        "message": f"✅ Perfect! I've sent the PDF to **{email_address}**. Please check your inbox (and spam folder just in case).",
+                        "sources": [],
+                        "is_pdf_response": True,
+                        "email_sent": True,
+                        "email_address": email_address
+                    }
+                }
+
+            except Exception as e:
+                logger.error(f"Failed to email previously created PDF: {str(e)}")
+                return {
+                    "success": True,
+                    "data": {
+                        "message": f"I found the PDF but couldn't send it. Error: {str(e)}",
+                        "sources": [],
+                        "is_pdf_response": False
+                    }
                 }
 
         if pdf_intent["is_pdf_request"]:
