@@ -23,9 +23,10 @@ class Settings(BaseSettings):
 
     # SendGrid configuration (optional - email features disabled if not provided)
     sendgrid_api_key: str = ""
-    sendgrid_from_email: str = "noreply@casebase.com"
+    sendgrid_from_email: str = "alexnguyen244@gmail.com"
 
     allowed_origins: str = "http://localhost:3000"
+    backend_url: str = "http://localhost:8000"
 
     class Config:
         env_file = ".env"

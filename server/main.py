@@ -292,7 +292,7 @@ async def get_download_url(s3_key: str, expiration: int = 3600):
     """
     try:
         # Return a proxy URL through our backend instead of presigned URL
-        proxy_url = f"http://localhost:8000/api/pdfs/view/{s3_key}"
+        proxy_url = f"{settings.backend_url}/api/pdfs/view/{s3_key}"
 
         return {
             "message": "Download URL generated successfully",
@@ -911,7 +911,7 @@ CRITICAL INSTRUCTION: After your summary, you MUST list ONLY the source document
                         }
                     )
 
-                    download_url = f"http://localhost:8000/api/pdfs/view/{s3_key}"
+                    download_url = f"{settings.backend_url}/api/pdfs/view/{s3_key}"
 
                     return {
                         "success": True,
@@ -945,7 +945,7 @@ CRITICAL INSTRUCTION: After your summary, you MUST list ONLY the source document
                 logger.info(f"PDF uploaded to S3: {s3_key}")
 
                 # Return download URL
-                download_url = f"http://localhost:8000/api/pdfs/view/{s3_key}"
+                download_url = f"{settings.backend_url}/api/pdfs/view/{s3_key}"
 
                 return {
                     "success": True,
