@@ -1,6 +1,8 @@
 import React, { useRef } from 'react';
 import { FileText, Trash2, Plus } from 'lucide-react';
 
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+
 const PDFViewer = ({ pdfs, onDelete, onUpload, isLoading }) => {
   const fileInputRef = useRef(null);
 
@@ -15,7 +17,7 @@ const PDFViewer = ({ pdfs, onDelete, onUpload, isLoading }) => {
   const handlePdfClick = async (pdf) => {
     // Get presigned URL from backend and open in new tab
     try {
-      const response = await fetch(`http://localhost:8000/api/pdfs/${encodeURIComponent(pdf.s3_key)}/download-url`);
+      const response = await fetch(`${API_BASE_URL}/api/pdfs/${encodeURIComponent(pdf.s3_key)}/download-url`);
       const data = await response.json();
 
       if (response.ok && data.url) {
