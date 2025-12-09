@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     pinecone_cloud: str = "aws"
     pinecone_region: str = "us-east-1"
 
+    # SendGrid configuration (optional - email features disabled if not provided)
+    sendgrid_api_key: str = ""
+    sendgrid_from_email: str = "noreply@casebase.com"
+
     allowed_origins: str = "http://localhost:3000"
 
     class Config:

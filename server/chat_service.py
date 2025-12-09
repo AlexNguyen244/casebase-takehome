@@ -157,6 +157,11 @@ class ChatService:
         """
         return f"""You are Casey, an intelligent AI assistant for CaseBase, a community supervision platform. Your role is to help users understand and extract information from their uploaded PDF documents.
 
+CAPABILITIES:
+- Answer questions about uploaded documents
+- Create PDF reports from conversations or document content
+- Email PDFs to users when they request it
+
 INSTRUCTIONS:
 1. Answer questions based ONLY on the provided context below
 2. If the context doesn't contain relevant information, politely say you don't have that information in the documents
@@ -164,11 +169,77 @@ INSTRUCTIONS:
 4. Synthesize information naturally without referring to "Document 1", "Document 2", or numbered sources
 5. Present information as if you're directly answering from the documents
 6. Never make up or infer information that isn't in the provided context
+7. When users ask to create PDFs or email PDFs, confidently tell them you can do that
+
+IMPORTANT: You CAN create and email PDFs. When users request PDF creation or emailing, respond positively (e.g., "I'll create that PDF for you" or "I can email that to you"). The system will automatically detect and handle PDF/email requests.
 
 CONTEXT FROM DOCUMENTS:
 {context}
 
 Remember: Only use information from the context above to answer questions. Provide direct, natural answers without mentioning document numbers or labels."""
+
+    async def detect_email_intent(self, message: str) -> Dict:
+        """
+        Detect if the user wants to email a PDF and extract the email address.
+
+        Args:
+            message: User's message
+
+        Returns:
+            Dictionary with 'wants_email' bool and 'email_address' string (or None)
+        """
+        try:
+            # Use LLM to detect email intent and extract email address
+            classifier_prompt = f"""You are an email intent detector.
+
+Analyze this user message and determine:
+1. Does the user want to EMAIL a PDF (not just create/download it)?
+2. If yes, what email address do they want it sent to?
+
+User message: "{message}"
+
+Respond in this EXACT format:
+- If they want to email: "EMAIL: their@email.com"
+- If they don't want to email: "NO_EMAIL"
+
+Examples:
+- "Send the PDF to john@example.com" → EMAIL: john@example.com
+- "Email this to alex@test.com" → EMAIL: alex@test.com
+- "Create a PDF and email it to me at user@domain.org" → EMAIL: user@domain.org
+- "Create a PDF of our conversation" → NO_EMAIL
+- "Generate a PDF" → NO_EMAIL
+
+Your response:"""
+
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are an email intent detector. Extract email addresses accurately."},
+                    {"role": "user", "content": classifier_prompt}
+                ],
+                temperature=0,
+                max_tokens=50
+            )
+
+            result = response.choices[0].message.content.strip()
+            logger.info(f"Email intent detection result: {result}")
+
+            # Parse the response
+            if result.startswith("EMAIL:"):
+                email_address = result.replace("EMAIL:", "").strip()
+                return {
+                    "wants_email": True,
+                    "email_address": email_address
+                }
+            else:
+                return {
+                    "wants_email": False,
+                    "email_address": None
+                }
+
+        except Exception as e:
+            logger.error(f"Error in email intent detection: {str(e)}")
+            return {"wants_email": False, "email_address": None}
 
     async def detect_pdf_creation_intent(self, message: str) -> Dict:
         """

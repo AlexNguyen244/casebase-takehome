@@ -179,17 +179,6 @@ const Chatbot = ({ uploadedPDFs }) => {
                 <p className="text-sm whitespace-pre-line">{message.text}</p>
               )}
 
-              {message.sources && message.sources.length > 0 && (
-                <div className="mt-2 pt-2 border-t border-gray-300">
-                  <p className="text-xs font-semibold text-gray-600 mb-1">Sources:</p>
-                  {message.sources.slice(0, 3).map((source, idx) => (
-                    <p key={idx} className="text-xs text-gray-500">
-                      • {source.file_name.split('/').pop()} (relevance: {(source.relevance_score * 100).toFixed(1)}%)
-                    </p>
-                  ))}
-                </div>
-              )}
-
               <p
                 className={`text-xs mt-1 ${
                   message.type === 'user' ? 'text-blue-100' : 'text-gray-500'

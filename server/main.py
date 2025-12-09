@@ -16,6 +16,7 @@ from pinecone_service import PineconeService
 from rag_service import RAGService
 from chat_service import ChatService
 from pdf_generator import pdf_generator
+from email_service import EmailService
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
 import io
@@ -65,6 +66,18 @@ chat_service = ChatService(
     pinecone_service=pinecone_service,
     model="gpt-4o-mini"
 )
+
+# Initialize email service (will use env variable for API key)
+email_service = None
+try:
+    sendgrid_api_key = settings.sendgrid_api_key
+    email_service = EmailService(
+        api_key=sendgrid_api_key,
+        from_email=settings.sendgrid_from_email
+    )
+    logger.info("Email service initialized successfully")
+except Exception as e:
+    logger.warning(f"Email service not initialized: {str(e)}. Email features will be disabled.")
 
 
 @app.on_event("startup")
@@ -410,6 +423,9 @@ async def chat_with_documents(request: ChatRequest):
         # Convert Pydantic models to dicts for the chat service
         history = [{"role": msg.role, "content": msg.content} for msg in request.conversation_history]
 
+        # Check if user wants to email the PDF
+        email_intent = await chat_service.detect_email_intent(request.message)
+
         # Check if user is requesting PDF creation using semantic detection
         pdf_intent = await chat_service.detect_pdf_creation_intent(request.message)
 
@@ -560,37 +576,114 @@ Create a well-structured response that summarizes and explains the key informati
                     }
                 }
 
-            # Upload PDF to S3
-            from datetime import datetime
-            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-            s3_key = f"generated_pdfs/{timestamp}_{filename}"
+            # Check if user wants to email the PDF
+            if email_intent["wants_email"] and email_intent["email_address"]:
+                # Email the PDF
+                email_address = email_intent["email_address"]
 
-            s3_service.s3_client.put_object(
-                Bucket=s3_service.bucket_name,
-                Key=s3_key,
-                Body=pdf_bytes,
-                ContentType="application/pdf",
-                Metadata={
-                    'generated_at': timestamp,
-                    'type': pdf_intent["type"]
+                # Check if email service is available
+                if not email_service:
+                    return {
+                        "success": True,
+                        "data": {
+                            "message": "I created the PDF, but email service is not configured. Please contact your administrator to enable email features.",
+                            "sources": [],
+                            "is_pdf_response": False
+                        }
+                    }
+
+                try:
+                    # Determine email subject based on PDF type
+                    if pdf_intent["type"] == "history":
+                        subject = "Your CaseBase Conversation Summary"
+                    else:
+                        subject = "Your CaseBase Document Report"
+
+                    # Send email with PDF attachment
+                    await email_service.send_pdf_email(
+                        to_email=email_address,
+                        subject=subject,
+                        pdf_bytes=pdf_bytes,
+                        pdf_filename=filename
+                    )
+
+                    logger.info(f"PDF successfully emailed to {email_address}")
+
+                    return {
+                        "success": True,
+                        "data": {
+                            "message": f"✅ Perfect! I've created your PDF and sent it to **{email_address}**. Please check your inbox (and spam folder just in case).",
+                            "sources": [],
+                            "is_pdf_response": True,
+                            "email_sent": True,
+                            "email_address": email_address
+                        }
+                    }
+
+                except Exception as e:
+                    logger.error(f"Failed to send email: {str(e)}")
+                    # Fallback to download if email fails - still upload to S3
+                    from datetime import datetime
+                    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                    s3_key = f"generated_pdfs/{timestamp}_{filename}"
+
+                    s3_service.s3_client.put_object(
+                        Bucket=s3_service.bucket_name,
+                        Key=s3_key,
+                        Body=pdf_bytes,
+                        ContentType="application/pdf",
+                        Metadata={
+                            'generated_at': timestamp,
+                            'type': pdf_intent["type"]
+                        }
+                    )
+
+                    download_url = f"http://localhost:8000/api/pdfs/view/{s3_key}"
+
+                    return {
+                        "success": True,
+                        "data": {
+                            "message": f"I created the PDF but couldn't send it to {email_address}. Error: {str(e)}. You can download it here instead: [Download PDF]({download_url})",
+                            "sources": [],
+                            "is_pdf_response": True,
+                            "pdf_url": download_url,
+                            "email_sent": False
+                        }
+                    }
+
+            else:
+                # No email request - provide download link
+                # Upload PDF to S3
+                from datetime import datetime
+                timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                s3_key = f"generated_pdfs/{timestamp}_{filename}"
+
+                s3_service.s3_client.put_object(
+                    Bucket=s3_service.bucket_name,
+                    Key=s3_key,
+                    Body=pdf_bytes,
+                    ContentType="application/pdf",
+                    Metadata={
+                        'generated_at': timestamp,
+                        'type': pdf_intent["type"]
+                    }
+                )
+
+                logger.info(f"PDF uploaded to S3: {s3_key}")
+
+                # Return download URL
+                download_url = f"http://localhost:8000/api/pdfs/view/{s3_key}"
+
+                return {
+                    "success": True,
+                    "data": {
+                        "message": f"I've created your PDF! You can download it here: [Download PDF]({download_url})",
+                        "sources": [],
+                        "is_pdf_response": True,
+                        "pdf_url": download_url,
+                        "s3_key": s3_key
+                    }
                 }
-            )
-
-            logger.info(f"PDF uploaded to S3: {s3_key}")
-
-            # Return download URL
-            download_url = f"http://localhost:8000/api/pdfs/view/{s3_key}"
-
-            return {
-                "success": True,
-                "data": {
-                    "message": f"I've created your PDF! You can download it here: [Download PDF]({download_url})",
-                    "sources": [],
-                    "is_pdf_response": True,
-                    "pdf_url": download_url,
-                    "s3_key": s3_key
-                }
-            }
 
         # Normal chat flow (not a PDF request)
         result = await chat_service.chat_with_documents(
