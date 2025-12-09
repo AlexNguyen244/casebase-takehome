@@ -178,13 +178,14 @@ CONTEXT FROM DOCUMENTS:
 
 Remember: Only use information from the context above to answer questions. Provide direct, natural answers without mentioning document numbers or labels."""
 
-    async def detect_email_intent(self, message: str, conversation_history: Optional[List[Dict]] = None) -> Dict:
+    async def detect_email_intent(self, message: str, conversation_history: Optional[List[Dict]] = None, remembered_email: Optional[str] = None) -> Dict:
         """
         Detect if the user wants to email a PDF and extract the email address.
 
         Args:
             message: User's message
             conversation_history: Previous messages in the conversation
+            remembered_email: Previously used email address from conversation history
 
         Returns:
             Dictionary with 'wants_email' bool and 'email_address' string (or None)
@@ -200,13 +201,19 @@ Remember: Only use information from the context above to answer questions. Provi
                 ])
                 context = f"\n\nCONVERSATION HISTORY:\n{history_text}\n"
 
+            # Add remembered email to context if available
+            remembered_email_context = ""
+            if remembered_email:
+                remembered_email_context = f"\n\nREMEMBERED EMAIL: {remembered_email}\nIf the user says 'email me' or 'send to me' without providing an email, use this remembered email.\n"
+
             # Use LLM to detect email intent and extract email address
             classifier_prompt = f"""You are an email intent detector.
-{context}
+{context}{remembered_email_context}
 Analyze this user message and determine:
 1. Does the user want to EMAIL a PDF (not just create/download it)?
 2. If yes, what email address do they want it sent to?
 3. Use the conversation history for context if the user says "it" or "that"
+4. If user says "email me" or "send to me" without providing an email, use the REMEMBERED EMAIL if available
 
 Current user message: "{message}"
 
@@ -219,6 +226,8 @@ Examples:
 - "Email this to alex@test.com" → EMAIL: alex@test.com
 - "Create a PDF and email it to me at user@domain.org" → EMAIL: user@domain.org
 - Previous: "Create a PDF about Alex", Current: "Send it to me at test@email.com" → EMAIL: test@email.com
+- Remembered email: "alex@test.com", Current: "Email me that" → EMAIL: alex@test.com
+- Remembered email: "alex@test.com", Current: "Send it to me" → EMAIL: alex@test.com
 - "Create a PDF of our conversation" → NO_EMAIL
 - "Generate a PDF" → NO_EMAIL
 
@@ -227,7 +236,7 @@ Your response:"""
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "You are an email intent detector. Extract email addresses accurately. Use conversation context."},
+                    {"role": "system", "content": "You are an email intent detector. Extract email addresses accurately. Use conversation context and remembered email when appropriate."},
                     {"role": "user", "content": classifier_prompt}
                 ],
                 temperature=0,
@@ -338,13 +347,14 @@ Answer with only one word: history, vector_content, or chat."""
             # Fail safe: if classifier fails, treat as normal chat
             return {"is_pdf_request": False, "type": None}
 
-    async def detect_send_documents_intent(self, message: str, conversation_history: Optional[List[Dict]] = None) -> Dict:
+    async def detect_send_documents_intent(self, message: str, conversation_history: Optional[List[Dict]] = None, remembered_email: Optional[str] = None) -> Dict:
         """
         Detect if the user wants to send/email existing documents (not create a PDF).
 
         Args:
             message: User's message
             conversation_history: Previous messages in the conversation
+            remembered_email: Previously used email address from conversation history
 
         Returns:
             Dictionary with 'wants_send_docs' bool, 'email_address' string, and 'topic' string
@@ -360,11 +370,16 @@ Answer with only one word: history, vector_content, or chat."""
                 ])
                 context = f"\n\nCONVERSATION HISTORY:\n{history_text}\n"
 
+            # Add remembered email to context if available
+            remembered_email_context = ""
+            if remembered_email:
+                remembered_email_context = f"\n\nREMEMBERED EMAIL: {remembered_email}\nIf the user says 'email me' or 'send to me' without providing an email, use this remembered email.\n"
+
             classifier_prompt = f"""You are an intent detector for a document management system.
-{context}
+{context}{remembered_email_context}
 Analyze this user message and determine:
 1. Does the user want to SEND/EMAIL existing documents (not create a new PDF)?
-2. If yes, what email address?
+2. If yes, what email address? Use REMEMBERED EMAIL if user says "email me" without providing one
 3. What topic/subject are they asking about? Use conversation history if they say "it", "that", or "them"
 
 Current user message: "{message}"
@@ -378,6 +393,8 @@ Examples:
 - "Email me documents about the resumes to john@test.com" → SEND_DOCS|john@test.com|resumes
 - "Can you send the job description files to me at user@domain.org" → SEND_DOCS|user@domain.org|job description
 - Previous: "Tell me about healthcare docs", Current: "Send them to alex@email.com" → SEND_DOCS|alex@email.com|healthcare
+- Remembered email: "alex@test.com", Current: "Find documents about Alex and email me them" → SEND_DOCS|alex@test.com|Alex
+- Remembered email: "john@test.com", Current: "Send me documents about healthcare" → SEND_DOCS|john@test.com|healthcare
 - "Create a PDF about Alex" → NO_SEND (this is PDF creation, not sending existing docs)
 - "What documents do you have?" → NO_SEND (just asking, not requesting to send)
 
@@ -386,7 +403,7 @@ Your response:"""
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "You are an intent detector. Extract email addresses and topics accurately. Use conversation context."},
+                    {"role": "system", "content": "You are an intent detector. Extract email addresses and topics accurately. Use conversation context and remembered email when appropriate."},
                     {"role": "user", "content": classifier_prompt}
                 ],
                 temperature=0,

@@ -6,7 +6,7 @@ Handles PDF uploads to AWS S3 and provides endpoints for CRUD operations.
 from fastapi import FastAPI, UploadFile, File, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from typing import List, Optional
+from typing import List, Optional, Dict
 import logging
 
 from config import settings
@@ -20,6 +20,7 @@ from email_service import EmailService
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
 import io
+import re
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -407,6 +408,30 @@ class PDFGenerateRequest(BaseModel):
     title: Optional[str] = None
 
 
+def extract_most_recent_email_from_history(history: List[Dict]) -> Optional[str]:
+    """
+    Extract the most recent email address mentioned in the conversation history.
+
+    Args:
+        history: List of conversation messages
+
+    Returns:
+        The most recent email address found, or None
+    """
+    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+
+    # Search from most recent to oldest
+    for msg in reversed(history):
+        content = msg.get('content', '')
+        emails = re.findall(email_pattern, content)
+        if emails:
+            # Return the first (most recent) email found
+            logger.info(f"Found remembered email from history: {emails[0]}")
+            return emails[0]
+
+    return None
+
+
 @app.post("/api/chat")
 async def chat_with_documents(request: ChatRequest):
     """
@@ -426,8 +451,38 @@ async def chat_with_documents(request: ChatRequest):
         # Convert Pydantic models to dicts for the chat service
         history = [{"role": msg.role, "content": msg.content} for msg in request.conversation_history]
 
+        # Extract the most recent email address from conversation history
+        remembered_email = extract_most_recent_email_from_history(history)
+        if remembered_email:
+            logger.info(f"Using remembered email address: {remembered_email}")
+
+        # Check if the previous assistant message was a PDF creation
+        # This helps us understand if "send it" refers to the PDF or documents
+        previous_was_pdf_creation = False
+        previous_pdf_topic = None
+
+        if history and len(history) >= 2:
+            # Check last assistant message
+            for i in range(len(history) - 1, -1, -1):
+                if history[i].get('role') == 'assistant':
+                    last_assistant_msg = history[i].get('content', '')
+                    # Check if it contains PDF download link or PDF-related text
+                    if 'Download PDF' in last_assistant_msg or 'pdf' in last_assistant_msg.lower() or '/api/pdfs/view/' in last_assistant_msg:
+                        previous_was_pdf_creation = True
+                        # Try to find the user's request that triggered the PDF
+                        if i > 0:
+                            for j in range(i - 1, -1, -1):
+                                if history[j].get('role') == 'user':
+                                    previous_pdf_topic = history[j].get('content', '')
+                                    break
+                        logger.info(f"Detected previous PDF creation. Topic: {previous_pdf_topic}")
+                    break
+
         # Check if user wants to send existing documents via email (not create PDF)
-        send_docs_intent = await chat_service.detect_send_documents_intent(request.message, history)
+        # Skip this check if previous message was a PDF creation and user is trying to email it
+        send_docs_intent = {"wants_send_docs": False}
+        if not previous_was_pdf_creation:
+            send_docs_intent = await chat_service.detect_send_documents_intent(request.message, history, remembered_email)
 
         if send_docs_intent["wants_send_docs"]:
             # User wants to send existing documents
@@ -607,10 +662,23 @@ Your response:"""
                 }
 
         # Check if user wants to email the PDF
-        email_intent = await chat_service.detect_email_intent(request.message, history)
+        email_intent = await chat_service.detect_email_intent(request.message, history, remembered_email)
 
         # Check if user is requesting PDF creation using semantic detection
         pdf_intent = await chat_service.detect_pdf_creation_intent(request.message, history)
+
+        # Special case: If previous message was PDF creation and user wants to email
+        # Treat this as a PDF creation + email request
+        if previous_was_pdf_creation and email_intent["wants_email"]:
+            logger.info(f"User wants to email the previously created PDF")
+            # Extract the topic from the previous PDF creation request
+            if previous_pdf_topic:
+                logger.info(f"Will recreate PDF with topic: {previous_pdf_topic}")
+                # Force PDF creation intent
+                pdf_intent = {
+                    "is_pdf_request": True,
+                    "type": "vector_content"
+                }
 
         if pdf_intent["is_pdf_request"]:
             logger.info(f"PDF creation request detected. Type: {pdf_intent['type']}, Confidence: {pdf_intent.get('confidence', 0):.3f}")
@@ -685,20 +753,55 @@ Format your response in clean markdown with proper headers (##), bullet points, 
 
             elif pdf_intent["type"] == "vector_content":
                 # Create PDF from vector storage content
-                # Extract the actual content topic from the user's message
-                logger.info(f"Extracting content topic from: {request.message}")
+                # Check if we should use the previous PDF topic
+                if previous_was_pdf_creation and previous_pdf_topic:
+                    logger.info(f"Using previous PDF topic: {previous_pdf_topic}")
+                    # Extract topic from the previous request
+                    topic_extraction_prompt = f"""Extract the main topic/subject from this user request, removing any mention of PDF creation or emailing.
 
-                # Build context from conversation history for topic extraction
-                history_context = ""
-                if history and len(history) > 0:
-                    recent_history = history[-6:]  # Last 3 exchanges
-                    history_text = "\n".join([
-                        f"{msg.get('role', 'user').capitalize()}: {msg.get('content', '')}"
-                        for msg in recent_history
-                    ])
-                    history_context = f"\n\nCONVERSATION HISTORY:\n{history_text}\n"
+User request: "{previous_pdf_topic}"
 
-                topic_extraction_prompt = f"""Extract the main topic/subject from this user request, removing any mention of PDF creation or emailing.
+Return ONLY the core topic that the user wants information about. Remove phrases like:
+- "Create a PDF"
+- "Generate a PDF"
+- "Email to"
+- Email addresses
+- Any PDF or email related instructions
+
+Examples:
+- "Create a pdf on Alex and his fit for Casebase and email to alex@email.com" → "Alex and his fit for Casebase"
+- "Generate a PDF about healthcare policies" → "healthcare policies"
+- "summary of colorado community correction" → "colorado community correction"
+
+Your response (topic only):"""
+
+                    topic_response = await chat_service.client.chat.completions.create(
+                        model=chat_service.model,
+                        messages=[
+                            {"role": "system", "content": "You extract topics from user requests. Return only the topic, nothing else."},
+                            {"role": "user", "content": topic_extraction_prompt}
+                        ],
+                        temperature=0,
+                        max_tokens=100
+                    )
+
+                    query = topic_response.choices[0].message.content.strip()
+                    logger.info(f"Extracted content topic from previous request: {query}")
+                else:
+                    # Extract the actual content topic from the user's message
+                    logger.info(f"Extracting content topic from: {request.message}")
+
+                    # Build context from conversation history for topic extraction
+                    history_context = ""
+                    if history and len(history) > 0:
+                        recent_history = history[-6:]  # Last 3 exchanges
+                        history_text = "\n".join([
+                            f"{msg.get('role', 'user').capitalize()}: {msg.get('content', '')}"
+                            for msg in recent_history
+                        ])
+                        history_context = f"\n\nCONVERSATION HISTORY:\n{history_text}\n"
+
+                    topic_extraction_prompt = f"""Extract the main topic/subject from this user request, removing any mention of PDF creation or emailing.
 {history_context}
 Current user request: "{request.message}"
 
@@ -720,18 +823,18 @@ Examples:
 
 Your response (topic only):"""
 
-                topic_response = await chat_service.client.chat.completions.create(
-                    model=chat_service.model,
-                    messages=[
-                        {"role": "system", "content": "You extract topics from user requests. Return only the topic, nothing else."},
-                        {"role": "user", "content": topic_extraction_prompt}
-                    ],
-                    temperature=0,
-                    max_tokens=100
-                )
+                    topic_response = await chat_service.client.chat.completions.create(
+                        model=chat_service.model,
+                        messages=[
+                            {"role": "system", "content": "You extract topics from user requests. Return only the topic, nothing else."},
+                            {"role": "user", "content": topic_extraction_prompt}
+                        ],
+                        temperature=0,
+                        max_tokens=100
+                    )
 
-                query = topic_response.choices[0].message.content.strip()
-                logger.info(f"Extracted content topic: {query}")
+                    query = topic_response.choices[0].message.content.strip()
+                    logger.info(f"Extracted content topic: {query}")
 
                 # Generate response to get the content from vector store
                 logger.info(f"Retrieving content from vector store for: {query}")
