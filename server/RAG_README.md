@@ -199,7 +199,7 @@ Following the reference implementation in `chunk.py`:
 
 ## Chat Service (`chat_service.py`)
 
-The Chat Service extends the RAG system with conversational AI capabilities.
+The Chat Service extends the RAG system with conversational AI capabilities and an intelligent priority-based intent detection system.
 
 ### Features
 
@@ -208,15 +208,30 @@ The Chat Service extends the RAG system with conversational AI capabilities.
    - Generates AI responses using OpenAI GPT-4o-mini
    - Tracks source documents used in responses
 
-2. **Intent Detection**
+2. **Multi-Intent Detection with Priority System** (NEW v2.0)
    - PDF creation intent (conversation history or document content)
    - Email sending intent
    - Document sending intent
+   - **Bulk PDF sending** (all, last N, or last PDF)
+   - **Source document sending** (original files used to create PDFs)
+   - **Priority-based routing** to handle ambiguous pronouns correctly
 
 3. **Source Attribution**
    - AI explicitly reports which documents it used
    - Filters out irrelevant documents
    - Ensures accurate citation
+
+### Priority-Based Intent Detection (NEW)
+
+The system now uses intelligent context analysis to determine which intent should be checked first:
+
+- **HIGHEST PRIORITY**: Bulk Send Intent - When recent PDFs exist and user says "send those"
+- **MEDIUM PRIORITY**: Send Documents Intent - When searching existing documents
+- **LOWEST PRIORITY**: Send Source Docs Intent - Only when user mentions "source" explicitly
+
+**Why this matters**: When a user says "Send those to my email" after creating PDFs, they mean the generated PDFs, not source documents or vector search results.
+
+**For detailed documentation on the priority system**, see [INTENT_DETECTION.md](INTENT_DETECTION.md)
 
 ### Usage
 
@@ -245,6 +260,38 @@ send_intent = await chat_service.detect_send_documents_intent(
     "Send me all documents relating to Alex to alex@example.com"
 )
 # Returns: {"wants_send_docs": True, "email_address": "alex@example.com", "topic": "Alex"}
+
+# Detect bulk PDF send intent (NEW v2.0)
+bulk_send_intent = await chat_service.detect_bulk_pdf_send_intent(
+    "Send those PDFs to alex@email.com",
+    conversation_history=[...]  # Must include generated PDF messages
+)
+# Returns: {"wants_bulk_send": True, "email_address": "alex@email.com", "selection_type": "all"}
+
+# Detect source docs intent (NEW v2.0)
+source_intent = await chat_service.detect_send_source_docs_intent(
+    "Send me the sources for those PDFs"
+)
+# Returns: {"wants_send_sources": True, "email_address": "[remembered]", "scope": "those"}
+```
+
+### Priority System Examples (NEW v2.0)
+
+```python
+# Example 1: "Send those" after creating PDFs → Sends generated PDFs
+history = [
+    {"role": "assistant", "content": "Download: /api/pdfs/view/generated_pdfs/20251209_195408_report.pdf"}
+]
+message = "Send those to alex@email.com"
+# System checks bulk_send_intent FIRST → Sends the generated PDF ✅
+
+# Example 2: "Send the sources" → Sends original source documents
+message = "Send me the sources for that PDF to alex@email.com"
+# System detects "sources" keyword → Checks send_source_docs_intent → Sends original files ✅
+
+# Example 3: No recent PDFs → Searches vector DB
+message = "Send me documents about healthcare to alex@email.com"
+# No recent PDFs → Checks send_docs_intent → Searches and sends from vector DB ✅
 ```
 
 ## PDF Generation (`pdf_generator.py`)

@@ -73,14 +73,23 @@ const sendMessage = async (message) => {
 };
 ```
 
-**Backend Intelligence:**
-- Detects user intent automatically
+**Backend Intelligence (v2.0 with Priority System):**
+- Detects user intent automatically with priority-based routing
+- Context-aware analysis prevents incorrect intent triggering
 - Routes to appropriate handler:
   - **Chat**: Returns AI response with sources
   - **PDF Creation**: Generates and returns PDF
   - **Email**: Creates and sends PDF via email
-  - **Send Docs**: Filters and emails documents
+  - **Send Docs**: Filters and emails existing documents from vector DB
   - **Bulk PDF Send**: Sends multiple generated PDFs (all, last N, or last one)
+  - **Send Source Docs**: Sends original files used to create PDFs
+
+**Priority Logic**:
+- When user says "send those" after creating PDFs → Sends generated PDFs (not sources)
+- When user says "send the sources" → Sends original source documents
+- When no recent PDFs exist → Searches vector DB for documents
+
+**For details**, see [Intent Detection Guide](server/INTENT_DETECTION.md)
 
 ### 3. PDF Viewing
 
@@ -143,14 +152,16 @@ const handleDeletePDF = async (s3_key) => {
 - Pinecone storage
 - Efficient semantic search
 
-✅ **AI Chat**
-- Multi-intent detection (chat/PDF/email/send docs/bulk send)
-- Source attribution
-- PDF creation from documents
-- Email integration with memory
-- Bulk PDF sending (all, last N, or specific)
-- Conversation history tracking
-- Document filtering
+✅ **AI Chat (v2.0 with Priority System)**
+- Priority-based multi-intent detection with context analysis
+- Handles pronouns correctly ("those" → generated PDFs vs sources)
+- Source attribution with metadata storage
+- PDF creation from chat history or documents
+- Email integration with address memory
+- Bulk PDF sending (all, last N, or last one)
+- Source document sending (original files)
+- Conversation history and PDF tracking
+- AI-powered document filtering
 
 ✅ **PDF Generation**
 - Professional formatting
@@ -177,17 +188,20 @@ Embedding generation → Pinecone upsert → Response
 Frontend refreshes PDF list
 ```
 
-### Chat Flow
+### Chat Flow (v2.0 with Priority System)
 ```
 User message → Chatbot → POST /api/chat
   ↓
-Backend intent detection → Route to handler
+Backend context analysis → Check for recent PDFs + keywords
+  ↓
+Priority-based intent detection → Route to handler
   ↓
 If chat: RAG retrieval → AI response → Frontend displays
 If PDF: Generate PDF → Return download link → Frontend opens
 If email: Generate PDF → Send email → Frontend confirms
-If send docs: Filter docs → Send email → Frontend confirms
-If bulk send: Track PDFs from history → Select PDFs → Send all → Frontend confirms
+If send docs: Vector DB search → AI filter → Send email → Frontend confirms
+If bulk send (PRIORITY): Track PDFs from history → Select PDFs → Send all → Frontend confirms
+If send sources: Get PDF metadata → Download sources → Send email → Frontend confirms
 ```
 
 ### Delete Flow
@@ -341,8 +355,11 @@ ALLOWED_ORIGINS=http://localhost:3000
 
 ## 📚 Related Documentation
 
+- **Main README**: `README.md` - Complete project overview
 - **Backend**: `server/README.md` - Complete backend docs
+- **Intent Detection**: `server/INTENT_DETECTION.md` - Priority system & intent routing (v2.0)
 - **Frontend**: `client/README.md` - Frontend documentation
 - **RAG System**: `server/RAG_README.md` - RAG architecture
 - **Docker**: `server/DOCKER.md` - Deployment guide
 - **Quick Start**: `server/QUICKSTART.md` - Fast setup
+- **Deployment**: `DEPLOYMENT.md` - Production deployment guide
