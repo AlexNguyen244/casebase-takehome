@@ -14,26 +14,11 @@ const PDFViewer = ({ pdfs, onDelete, onUpload, isLoading }) => {
     }
   };
 
-  const handlePdfClick = async (pdf) => {
-    // Get presigned URL from backend and open in new tab
-    try {
-      console.log('Fetching PDF URL for:', pdf.s3_key);
-      const response = await fetch(`${API_BASE_URL}/api/pdfs/${encodeURIComponent(pdf.s3_key)}/download-url`);
-      const data = await response.json();
-
-      console.log('API Response:', { status: response.status, data });
-
-      if (response.ok && data.url) {
-        console.log('Opening URL:', data.url);
-        window.open(data.url, '_blank');
-      } else {
-        console.error('Failed to get download URL. Response:', response.status, data);
-        alert('Unable to open PDF. The download link may have expired or the file may not be accessible.');
-      }
-    } catch (error) {
-      console.error('Error opening PDF:', error);
-      alert('Error opening PDF. Please try again later.');
-    }
+  const handlePdfClick = (pdf) => {
+    // Construct the view URL directly and open it
+    // This must be synchronous to avoid popup blockers
+    const viewUrl = `${API_BASE_URL}/api/pdfs/view/${pdf.s3_key}`;
+    window.open(viewUrl, '_blank');
   };
   const formatFileSize = (bytes) => {
     if (bytes < 1024) return bytes + ' B';
