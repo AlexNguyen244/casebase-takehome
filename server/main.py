@@ -324,6 +324,8 @@ async def view_pdf(s3_key: str):
         from fastapi.responses import StreamingResponse
         import io
 
+        logger.info(f"[PDF VIEW] Requesting PDF from S3: {s3_key}")
+
         # Get the PDF from S3
         response = s3_service.s3_client.get_object(
             Bucket=s3_service.bucket_name,
@@ -332,12 +334,16 @@ async def view_pdf(s3_key: str):
 
         # Stream the PDF
         pdf_content = response['Body'].read()
+        logger.info(f"[PDF VIEW] Retrieved PDF from S3: {s3_key}, size={len(pdf_content)} bytes")
 
         return StreamingResponse(
             io.BytesIO(pdf_content),
             media_type="application/pdf",
             headers={
-                "Content-Disposition": f"inline; filename={s3_key.split('/')[-1]}"
+                "Content-Disposition": f"inline; filename={s3_key.split('/')[-1]}",
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0"
             }
         )
 
@@ -432,6 +438,41 @@ def extract_most_recent_email_from_history(history: List[Dict]) -> Optional[str]
     return None
 
 
+def extract_generated_pdfs_from_history(history: List[Dict]) -> List[Dict]:
+    """
+    Extract all generated PDF S3 keys from the conversation history.
+
+    Args:
+        history: List of conversation messages
+
+    Returns:
+        List of dicts with 's3_key' and 'timestamp' for each generated PDF (chronological order)
+    """
+    generated_pdfs = []
+    s3_key_pattern = r'/api/pdfs/view/(generated_pdfs/[^\s\)]+\.pdf)'
+
+    for msg in history:
+        if msg.get('role') == 'assistant':
+            content = msg.get('content', '')
+            # Look for PDF download links
+            if 'Download PDF' in content or '/api/pdfs/view/' in content:
+                # Extract S3 key from the URL
+                matches = re.findall(s3_key_pattern, content)
+                for s3_key in matches:
+                    # Extract timestamp from the S3 key format: generated_pdfs/20251209_195408_document_content.pdf
+                    timestamp_match = re.search(r'generated_pdfs/(\d{8}_\d{6})_', s3_key)
+                    timestamp = timestamp_match.group(1) if timestamp_match else None
+
+                    generated_pdfs.append({
+                        's3_key': s3_key,
+                        'timestamp': timestamp,
+                        'filename': s3_key.split('/')[-1]
+                    })
+
+    logger.info(f"Found {len(generated_pdfs)} generated PDFs in conversation history")
+    return generated_pdfs
+
+
 @app.post("/api/chat")
 async def chat_with_documents(request: ChatRequest):
     """
@@ -493,6 +534,7 @@ async def chat_with_documents(request: ChatRequest):
         provided_email = None
         was_asked_for_pdf_email = False
         was_asked_for_docs_email = False
+        was_asked_for_bulk_pdf_email = False
 
         if re.search(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', request.message):
             # Check if previous assistant message asked for email
@@ -507,8 +549,12 @@ async def chat_with_documents(request: ChatRequest):
                                 provided_email = email_match.group(0)
                                 logger.info(f"User provided email after being asked: {provided_email}")
 
-                            # Determine what they were asked about
-                            if 'pdf' in last_assistant_msg.lower():
+                            # Determine what they were asked about by checking the message
+                            if 'pdfs' in last_assistant_msg.lower():
+                                # Plural "PDFs" indicates bulk send
+                                was_asked_for_bulk_pdf_email = True
+                            elif 'pdf' in last_assistant_msg.lower():
+                                # Singular "PDF" indicates single PDF
                                 was_asked_for_pdf_email = True
                             else:
                                 was_asked_for_docs_email = True
@@ -525,6 +571,9 @@ async def chat_with_documents(request: ChatRequest):
 
         if not skip_send_docs_check:
             send_docs_intent = await chat_service.detect_send_documents_intent(request.message, history, remembered_email)
+
+        # Initialize bulk_send_intent - may be set by email follow-up handler below
+        bulk_send_intent = None
 
         # If user provided email only after being asked, handle accordingly
         if user_provided_email_only and provided_email:
@@ -581,6 +630,24 @@ async def chat_with_documents(request: ChatRequest):
                             "is_pdf_response": False
                         }
                     }
+
+            elif was_asked_for_bulk_pdf_email:
+                # Look for the previous bulk send request
+                for i in range(len(history) - 1, -1, -1):
+                    if history[i].get('role') == 'user':
+                        prev_user_msg = history[i].get('content', '')
+                        # Check if it was a bulk send request
+                        if any(keyword in prev_user_msg.lower() for keyword in ['send', 'email', 'pdf']):
+                            logger.info(f"Retrying bulk PDF send with provided email: {provided_email}")
+                            # Recheck bulk send intent with the previous message and the new email
+                            bulk_send_intent = await chat_service.detect_bulk_pdf_send_intent(prev_user_msg, history, provided_email)
+                            if bulk_send_intent["wants_bulk_send"]:
+                                # Override the email address with the one just provided
+                                bulk_send_intent["email_address"] = provided_email
+
+                                # Now proceed to bulk send logic with the email
+                                # This will be handled by the bulk send block below
+                            break
 
             elif was_asked_for_docs_email:
                 # Look for the topic from the previous incomplete send request
@@ -786,6 +853,132 @@ Your response:"""
                     }
                 }
 
+        # Check if user wants to bulk send generated PDFs (if not already set by email follow-up handler)
+        if bulk_send_intent is None:
+            bulk_send_intent = await chat_service.detect_bulk_pdf_send_intent(request.message, history, remembered_email)
+
+        if bulk_send_intent and bulk_send_intent["wants_bulk_send"]:
+            logger.info(f"Bulk PDF send request detected. Selection: {bulk_send_intent['selection_type']}, Count: {bulk_send_intent['count']}, Email: {bulk_send_intent['email_address']}")
+
+            email_address = bulk_send_intent["email_address"]
+
+            # Check if email address is missing
+            if not email_address or email_address == "":
+                logger.info("Email address missing in bulk send request")
+                return {
+                    "success": True,
+                    "data": {
+                        "message": "I'd be happy to send you the PDFs! What email address would you like me to send them to?",
+                        "sources": [],
+                        "is_bulk_send_response": False,
+                        "awaiting_email_for": "bulk_pdfs"
+                    }
+                }
+
+            # Check if email service is available
+            if not email_service:
+                return {
+                    "success": True,
+                    "data": {
+                        "message": "Email service is not configured. Please contact your administrator to enable email features.",
+                        "sources": [],
+                        "is_bulk_send_response": False
+                    }
+                }
+
+            # Extract generated PDFs from conversation history
+            all_generated_pdfs = extract_generated_pdfs_from_history(history)
+
+            if not all_generated_pdfs or len(all_generated_pdfs) == 0:
+                return {
+                    "success": True,
+                    "data": {
+                        "message": "I couldn't find any generated PDFs in our conversation history. Please create some PDFs first!",
+                        "sources": [],
+                        "is_bulk_send_response": False
+                    }
+                }
+
+            # Select PDFs based on selection_type
+            selected_pdfs = []
+            selection_type = bulk_send_intent["selection_type"]
+            count = bulk_send_intent["count"]
+
+            if selection_type == "all":
+                selected_pdfs = all_generated_pdfs
+                logger.info(f"Selecting all {len(selected_pdfs)} PDFs")
+            elif selection_type == "last":
+                selected_pdfs = [all_generated_pdfs[-1]]
+                logger.info(f"Selecting last PDF: {selected_pdfs[0]['s3_key']}")
+            elif selection_type == "last_n":
+                # Get the last N PDFs
+                selected_pdfs = all_generated_pdfs[-count:] if count <= len(all_generated_pdfs) else all_generated_pdfs
+                logger.info(f"Selecting last {len(selected_pdfs)} PDFs")
+
+            # Download PDFs from S3
+            pdfs_to_send = []
+            for pdf_info in selected_pdfs:
+                try:
+                    s3_response = s3_service.s3_client.get_object(
+                        Bucket=s3_service.bucket_name,
+                        Key=pdf_info['s3_key']
+                    )
+                    pdf_bytes = s3_response['Body'].read()
+
+                    pdfs_to_send.append({
+                        'bytes': pdf_bytes,
+                        'filename': pdf_info['filename']
+                    })
+
+                    logger.info(f"Downloaded PDF: {pdf_info['filename']}")
+
+                except Exception as e:
+                    logger.warning(f"Failed to download PDF {pdf_info['s3_key']}: {str(e)}")
+                    continue
+
+            if not pdfs_to_send:
+                return {
+                    "success": True,
+                    "data": {
+                        "message": "I found the PDFs but couldn't retrieve them from storage. Please try again later.",
+                        "sources": [],
+                        "is_bulk_send_response": False
+                    }
+                }
+
+            # Send PDFs via email
+            try:
+                await email_service.send_documents_email(
+                    to_email=email_address,
+                    subject=f"Your CaseBase Generated PDFs ({len(pdfs_to_send)} document(s))",
+                    documents=pdfs_to_send
+                )
+
+                pdf_list = "\n".join([f"- {pdf['filename']}" for pdf in pdfs_to_send])
+
+                return {
+                    "success": True,
+                    "data": {
+                        "message": f"✅ Perfect! I've sent {len(pdfs_to_send)} generated PDF(s) to **{email_address}**.\n\nPDFs sent:\n{pdf_list}\n\nPlease check your inbox (and spam folder just in case).",
+                        "sources": [],
+                        "is_bulk_send_response": True,
+                        "email_sent": True,
+                        "email_address": email_address,
+                        "pdfs_count": len(pdfs_to_send)
+                    }
+                }
+
+            except Exception as e:
+                logger.error(f"Failed to send bulk PDFs email: {str(e)}")
+                return {
+                    "success": True,
+                    "data": {
+                        "message": f"I found the PDFs but couldn't send the email. Error: {str(e)}",
+                        "sources": [],
+                        "is_bulk_send_response": False
+                    }
+                }
+
         # Check if user is requesting PDF creation using semantic detection
         pdf_intent = await chat_service.detect_pdf_creation_intent(request.message, history)
 
@@ -936,55 +1129,20 @@ Format your response in clean markdown with proper headers (##), bullet points, 
 
             elif pdf_intent["type"] == "vector_content":
                 # Create PDF from vector storage content
-                # Check if we should use the previous PDF topic
-                if previous_was_pdf_creation and previous_pdf_topic:
-                    logger.info(f"Using previous PDF topic: {previous_pdf_topic}")
-                    # Extract topic from the previous request
-                    topic_extraction_prompt = f"""Extract the main topic/subject from this user request, removing any mention of PDF creation or emailing.
+                # Extract the actual content topic from the user's message
+                logger.info(f"Extracting content topic from: {request.message}")
 
-User request: "{previous_pdf_topic}"
+                # Build context from conversation history for topic extraction
+                history_context = ""
+                if history and len(history) > 0:
+                    recent_history = history[-6:]  # Last 3 exchanges
+                    history_text = "\n".join([
+                        f"{msg.get('role', 'user').capitalize()}: {msg.get('content', '')}"
+                        for msg in recent_history
+                    ])
+                    history_context = f"\n\nCONVERSATION HISTORY:\n{history_text}\n"
 
-Return ONLY the core topic that the user wants information about. Remove phrases like:
-- "Create a PDF"
-- "Generate a PDF"
-- "Email to"
-- Email addresses
-- Any PDF or email related instructions
-
-Examples:
-- "Create a pdf on Alex and his fit for Casebase and email to alex@email.com" → "Alex and his fit for Casebase"
-- "Generate a PDF about healthcare policies" → "healthcare policies"
-- "summary of colorado community correction" → "colorado community correction"
-
-Your response (topic only):"""
-
-                    topic_response = await chat_service.client.chat.completions.create(
-                        model=chat_service.model,
-                        messages=[
-                            {"role": "system", "content": "You extract topics from user requests. Return only the topic, nothing else."},
-                            {"role": "user", "content": topic_extraction_prompt}
-                        ],
-                        temperature=0,
-                        max_tokens=100
-                    )
-
-                    query = topic_response.choices[0].message.content.strip()
-                    logger.info(f"Extracted content topic from previous request: {query}")
-                else:
-                    # Extract the actual content topic from the user's message
-                    logger.info(f"Extracting content topic from: {request.message}")
-
-                    # Build context from conversation history for topic extraction
-                    history_context = ""
-                    if history and len(history) > 0:
-                        recent_history = history[-6:]  # Last 3 exchanges
-                        history_text = "\n".join([
-                            f"{msg.get('role', 'user').capitalize()}: {msg.get('content', '')}"
-                            for msg in recent_history
-                        ])
-                        history_context = f"\n\nCONVERSATION HISTORY:\n{history_text}\n"
-
-                    topic_extraction_prompt = f"""Extract the main topic/subject from this user request, removing any mention of PDF creation or emailing.
+                topic_extraction_prompt = f"""Extract the main topic/subject from this user request, removing any mention of PDF creation or emailing.
 {history_context}
 Current user request: "{request.message}"
 
@@ -1006,21 +1164,21 @@ Examples:
 
 Your response (topic only):"""
 
-                    topic_response = await chat_service.client.chat.completions.create(
-                        model=chat_service.model,
-                        messages=[
-                            {"role": "system", "content": "You extract topics from user requests. Return only the topic, nothing else."},
-                            {"role": "user", "content": topic_extraction_prompt}
-                        ],
-                        temperature=0,
-                        max_tokens=100
-                    )
+                topic_response = await chat_service.client.chat.completions.create(
+                    model=chat_service.model,
+                    messages=[
+                        {"role": "system", "content": "You extract topics from user requests. Return only the topic, nothing else."},
+                        {"role": "user", "content": topic_extraction_prompt}
+                    ],
+                    temperature=0,
+                    max_tokens=100
+                )
 
-                    query = topic_response.choices[0].message.content.strip()
-                    logger.info(f"Extracted content topic: {query}")
+                query = topic_response.choices[0].message.content.strip()
+                logger.info(f"[PDF GEN] Extracted content topic: '{query}' from message: '{request.message}'")
 
                 # Generate response to get the content from vector store
-                logger.info(f"Retrieving content from vector store for: {query}")
+                logger.info(f"[PDF GEN] Retrieving content from vector store for: {query}")
 
                 # Get embedding for the query
                 query_embedding = await embedding_service.generate_embedding(query)
@@ -1092,6 +1250,7 @@ CRITICAL INSTRUCTION: After your summary, you MUST list ONLY the source document
                 )
 
                 ai_response = response.choices[0].message.content
+                logger.info(f"[PDF GEN] AI generated summary (first 200 chars): {ai_response[:200]}...")
 
                 # Parse out the sources used and the actual summary
                 if "SOURCES_USED:" in ai_response:
@@ -1131,12 +1290,19 @@ CRITICAL INSTRUCTION: After your summary, you MUST list ONLY the source document
                     logger.info(f"Source documents to include in PDF: {source_document_names}")
 
                 # Create PDF with the query, AI summary, and source document names
+                logger.info(f"[PDF GEN] Generating PDF with prompt='{query}', summary length={len(ai_summary)}, sources={source_document_names}")
                 pdf_bytes = pdf_generator.generate_from_prompt(
                     prompt=query,
                     response=ai_summary,
                     source_documents=source_document_names
                 )
-                filename = "document_content.pdf"
+                logger.info(f"[PDF GEN] PDF generated successfully, size={len(pdf_bytes)} bytes")
+
+                # Create descriptive filename from query topic
+                # Sanitize query for filename (remove special chars, limit length)
+                safe_topic = re.sub(r'[^\w\s-]', '', query)[:50]  # Remove special chars, max 50 chars
+                safe_topic = re.sub(r'\s+', '_', safe_topic.strip())  # Replace spaces with underscores
+                filename = f"{safe_topic}_content.pdf" if safe_topic else "document_content.pdf"
 
             else:
                 # Fallback - shouldn't reach here
@@ -1196,8 +1362,8 @@ CRITICAL INSTRUCTION: After your summary, you MUST list ONLY the source document
                 except Exception as e:
                     logger.error(f"Failed to send email: {str(e)}")
                     # Fallback to download if email fails - still upload to S3
-                    from datetime import datetime
-                    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                    from datetime import datetime, timezone
+                    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
                     s3_key = f"generated_pdfs/{timestamp}_{filename}"
 
                     s3_service.s3_client.put_object(
@@ -1227,14 +1393,18 @@ CRITICAL INSTRUCTION: After your summary, you MUST list ONLY the source document
             else:
                 # No email request - provide download link
                 # Upload PDF to S3
-                from datetime import datetime
-                timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                from datetime import datetime, timezone
+                timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
                 s3_key = f"generated_pdfs/{timestamp}_{filename}"
+                logger.info(f"[PDF GEN] Creating PDF with timestamp={timestamp}, filename={filename}, s3_key={s3_key}, pdf_bytes size={len(pdf_bytes)}")
+
+                # Ensure we're uploading fresh bytes (convert to bytes if needed)
+                pdf_bytes_to_upload = bytes(pdf_bytes) if not isinstance(pdf_bytes, bytes) else pdf_bytes
 
                 s3_service.s3_client.put_object(
                     Bucket=s3_service.bucket_name,
                     Key=s3_key,
-                    Body=pdf_bytes,
+                    Body=pdf_bytes_to_upload,
                     ContentType="application/pdf",
                     Metadata={
                         'generated_at': timestamp,
@@ -1242,7 +1412,7 @@ CRITICAL INSTRUCTION: After your summary, you MUST list ONLY the source document
                     }
                 )
 
-                logger.info(f"PDF uploaded to S3: {s3_key}")
+                logger.info(f"[PDF GEN] PDF uploaded to S3: {s3_key}, size={len(pdf_bytes)} bytes")
 
                 # Return download URL
                 download_url = f"{settings.backend_url}/api/pdfs/view/{s3_key}"

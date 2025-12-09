@@ -503,6 +503,155 @@ Your response:"""
             logger.error(f"Error in send documents intent detection: {str(e)}")
             return {"wants_send_docs": False, "email_address": None, "topic": None}
 
+    async def detect_bulk_pdf_send_intent(self, message: str, conversation_history: Optional[List[Dict]] = None, remembered_email: Optional[str] = None) -> Dict:
+        """
+        Detect if the user wants to send multiple generated PDFs via email.
+
+        Args:
+            message: User's message
+            conversation_history: Previous messages in the conversation
+            remembered_email: Previously used email address from conversation history
+
+        Returns:
+            Dictionary with:
+            - 'wants_bulk_send' bool: Whether user wants to send multiple PDFs
+            - 'email_address' string: Email address to send to
+            - 'selection_type' string: 'all', 'last_n', 'last'
+            - 'count' int: Number of PDFs to send (for 'last_n')
+        """
+        try:
+            # Build context from conversation history
+            context = ""
+            if conversation_history and len(conversation_history) > 0:
+                recent_history = conversation_history[-10:]  # Last 5 exchanges
+                history_text = "\n".join([
+                    f"{msg.get('role', 'user').capitalize()}: {msg.get('content', '')}"
+                    for msg in recent_history
+                ])
+                context = f"\n\nCONVERSATION HISTORY:\n{history_text}\n"
+
+            # Add remembered email to context if available
+            remembered_email_context = ""
+            if remembered_email:
+                remembered_email_context = f"\n\nREMEMBERED EMAIL: {remembered_email}\nIf the user says 'email me' or 'send to me' without providing an email, use this remembered email.\n"
+
+            classifier_prompt = f"""You are an intent detector for a document management system that tracks generated PDFs.
+{context}{remembered_email_context}
+Analyze this user message and determine:
+1. Does the user want to SEND/EMAIL previously generated PDFs from this conversation?
+2. If yes, which PDFs do they want? (all, last one, last N)
+3. What email address? Use REMEMBERED EMAIL if user says "email me" without providing one
+
+Current user message: "{message}"
+
+IMPORTANT: This is specifically for sending GENERATED PDFs from the conversation, not creating new ones or sending existing documents.
+
+Keywords that indicate bulk PDF sending:
+- "Send all PDFs"
+- "Email the last 3 PDFs"
+- "Send me all the reports"
+- "Email the PDFs we created"
+- "Send those PDFs"
+- "Email all generated PDFs"
+
+Respond in this EXACT format:
+- If they want to send all PDFs: "BULK_SEND|all|email@example.com"
+- If they want the last N PDFs: "BULK_SEND|last_n|N|email@example.com" (where N is a number)
+- If they want just the last PDF: "BULK_SEND|last|email@example.com"
+- If they don't want to send PDFs: "NO_BULK_SEND"
+
+Examples:
+- "Send all the PDFs to alex@email.com" → BULK_SEND|all|alex@email.com
+- "Email me the last 3 PDFs" (remembered: john@test.com) → BULK_SEND|last_n|3|john@test.com
+- "Send the last PDF to user@domain.org" → BULK_SEND|last|user@domain.org
+- "Email all generated reports to me" (remembered: alex@test.com) → BULK_SEND|all|alex@test.com
+- "Send me all PDFs we created" (remembered: john@test.com) → BULK_SEND|all|john@test.com
+- "Email the last 5 reports to alex@email.com" → BULK_SEND|last_n|5|alex@email.com
+- Previous: "Created 3 PDFs", Current: "Send them all to me" (remembered: user@test.com) → BULK_SEND|all|user@test.com
+- Previous: "Here are your PDFs", Current: "Email the last 2 to alex@email.com" → BULK_SEND|last_n|2|alex@email.com
+- "Create a new PDF" → NO_BULK_SEND (creating, not sending)
+- "What PDFs do we have?" → NO_BULK_SEND (asking, not sending)
+
+Your response:"""
+
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are an intent detector. Extract email addresses and PDF selection criteria accurately. Use conversation context and remembered email when appropriate."},
+                    {"role": "user", "content": classifier_prompt}
+                ],
+                temperature=0,
+                max_tokens=100
+            )
+
+            result = response.choices[0].message.content.strip()
+            logger.info(f"Bulk PDF send intent detection result: {result}")
+
+            # Parse the response
+            if result.startswith("BULK_SEND|"):
+                parts = result.replace("BULK_SEND|", "").split("|")
+
+                if len(parts) >= 2:
+                    selection_type = parts[0].strip()
+
+                    # Handle different selection types
+                    if selection_type == "last_n" and len(parts) >= 3:
+                        count = int(parts[1].strip())
+                        email_address = parts[2].strip()
+
+                        # Check if email_address is a placeholder
+                        if email_address in ["[remembered_email]", "[email]", "REMEMBERED_EMAIL", "email"]:
+                            email_address = remembered_email if remembered_email else None
+
+                        return {
+                            "wants_bulk_send": True,
+                            "email_address": email_address,
+                            "selection_type": "last_n",
+                            "count": count
+                        }
+                    elif selection_type == "all":
+                        email_address = parts[1].strip()
+
+                        # Check if email_address is a placeholder
+                        if email_address in ["[remembered_email]", "[email]", "REMEMBERED_EMAIL", "email"]:
+                            email_address = remembered_email if remembered_email else None
+
+                        return {
+                            "wants_bulk_send": True,
+                            "email_address": email_address,
+                            "selection_type": "all",
+                            "count": None
+                        }
+                    elif selection_type == "last":
+                        email_address = parts[1].strip()
+
+                        # Check if email_address is a placeholder
+                        if email_address in ["[remembered_email]", "[email]", "REMEMBERED_EMAIL", "email"]:
+                            email_address = remembered_email if remembered_email else None
+
+                        return {
+                            "wants_bulk_send": True,
+                            "email_address": email_address,
+                            "selection_type": "last",
+                            "count": 1
+                        }
+
+            return {
+                "wants_bulk_send": False,
+                "email_address": None,
+                "selection_type": None,
+                "count": None
+            }
+
+        except Exception as e:
+            logger.error(f"Error in bulk PDF send intent detection: {str(e)}")
+            return {
+                "wants_bulk_send": False,
+                "email_address": None,
+                "selection_type": None,
+                "count": None
+            }
+
     async def get_chat_completion_stream(
         self,
         message: str,
