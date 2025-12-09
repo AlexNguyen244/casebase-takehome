@@ -120,13 +120,14 @@ class PDFGenerator:
             backColor='#f3f4f6'
         ))
 
-    def generate_from_prompt(self, prompt: str, response: str) -> bytes:
+    def generate_from_prompt(self, prompt: str, response: str, source_documents: list = None) -> bytes:
         """
         Generate PDF from a prompt and response.
 
         Args:
             prompt: User's prompt/question
             response: AI's response (supports markdown formatting)
+            source_documents: Optional list of source document filenames to include at the end
 
         Returns:
             bytes: PDF file content
@@ -173,6 +174,34 @@ class PDFGenerator:
         # Convert markdown response to PDF elements
         response_elements = self._markdown_to_pdf_elements(response)
         story.extend(response_elements)
+
+        # Add source documents section if provided
+        if source_documents and len(source_documents) > 0:
+            story.append(Spacer(1, 0.4 * inch))
+
+            # Add visual separator (horizontal line)
+            from reportlab.platypus import HRFlowable
+            story.append(HRFlowable(width="100%", thickness=1, lineCap='round', color=colors.HexColor('#cbd5e1'), spaceBefore=10, spaceAfter=10))
+
+            # Sources heading
+            sources_title = Paragraph("Source Documents", self.styles['Heading2'])
+            story.append(sources_title)
+            story.append(Spacer(1, 0.15 * inch))
+
+            # Description
+            description = Paragraph(
+                "This report was generated using information from the following source document(s):",
+                self.styles['Normal']
+            )
+            story.append(description)
+            story.append(Spacer(1, 0.15 * inch))
+
+            # List source documents
+            for doc_name in source_documents:
+                bullet = f"• {doc_name}"
+                doc_para = Paragraph(bullet, self.styles['Normal'])
+                story.append(doc_para)
+                story.append(Spacer(1, 0.05 * inch))
 
         # Build PDF
         doc.build(story)

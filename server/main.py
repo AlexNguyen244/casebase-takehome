@@ -411,17 +411,200 @@ class PDFGenerateRequest(BaseModel):
 async def chat_with_documents(request: ChatRequest):
     """
     Chat with the AI assistant using RAG.
-    Also detects PDF creation requests and handles them automatically.
+    Also detects and handles:
+    - Sending existing documents via email
+    - PDF creation requests (from chat history or document content)
+    - Normal chat conversations
 
     Args:
         request: Chat request with message and optional history
 
     Returns:
-        dict: AI response with sources and metadata, or PDF generation result
+        dict: AI response with sources and metadata, PDF generation result, or document send confirmation
     """
     try:
         # Convert Pydantic models to dicts for the chat service
         history = [{"role": msg.role, "content": msg.content} for msg in request.conversation_history]
+
+        # Check if user wants to send existing documents via email (not create PDF)
+        send_docs_intent = await chat_service.detect_send_documents_intent(request.message)
+
+        if send_docs_intent["wants_send_docs"]:
+            # User wants to send existing documents
+            logger.info(f"Send documents request detected. Topic: {send_docs_intent['topic']}, Email: {send_docs_intent['email_address']}")
+
+            email_address = send_docs_intent["email_address"]
+            topic = send_docs_intent["topic"]
+
+            # Check if email service is available
+            if not email_service:
+                return {
+                    "success": True,
+                    "data": {
+                        "message": "Email service is not configured. Please contact your administrator to enable email features.",
+                        "sources": [],
+                        "is_pdf_response": False
+                    }
+                }
+
+            # Query vector database to find relevant documents
+            query_embedding = await embedding_service.generate_embedding(topic)
+
+            results = await pinecone_service.query(
+                query_embedding=query_embedding,
+                top_k=10,
+                filter=None
+            )
+
+            if not results or len(results) == 0:
+                return {
+                    "success": True,
+                    "data": {
+                        "message": f"I couldn't find any documents related to '{topic}'. Please try a different search term or upload documents first.",
+                        "sources": [],
+                        "is_send_docs_response": False
+                    }
+                }
+
+            # Build context with source labels for AI filtering
+            context_parts = []
+            available_sources = {}
+
+            for result in results:
+                metadata = result.get("metadata", {})
+                chunk_text = metadata.get("chunk_text", "")
+                file_name = metadata.get("file_name", "")
+
+                if file_name:
+                    simple_name = file_name.split('/')[-1].replace('.pdf', '')
+                    available_sources[simple_name] = file_name
+                    # Limit chunk preview to avoid token limits
+                    chunk_preview = chunk_text[:300] if len(chunk_text) > 300 else chunk_text
+                    context_parts.append(f"[Source: {simple_name}]\n{chunk_preview}")
+
+            context = "\n\n".join(context_parts)
+
+            logger.info(f"Retrieved chunks from {len(available_sources)} unique documents")
+
+            # Use AI to filter and identify which documents are actually relevant
+            filter_prompt = f"""You are analyzing document chunks to determine which documents are relevant to a specific topic.
+
+TOPIC: {topic}
+
+DOCUMENT CHUNKS:
+{context}
+
+TASK: Determine which source documents are ACTUALLY about "{topic}".
+- Only include documents that are primarily about or directly related to {topic}
+- Do NOT include documents that only mention {topic} in passing or tangentially
+- Be strict and selective - if a document isn't clearly about the topic, exclude it
+
+List ONLY the relevant source documents.
+Format: RELEVANT_DOCS: source1, source2, source3
+Use the exact source names shown in [Source: ...] tags above.
+
+Your response:"""
+
+            filter_response = await chat_service.client.chat.completions.create(
+                model=chat_service.model,
+                messages=[
+                    {"role": "system", "content": "You are a document relevance analyzer. Be strict and selective about relevance."},
+                    {"role": "user", "content": filter_prompt}
+                ],
+                temperature=0,
+                max_tokens=200
+            )
+
+            ai_filter_result = filter_response.choices[0].message.content
+
+            # Parse the AI response to get relevant documents
+            document_files = set()
+            if "RELEVANT_DOCS:" in ai_filter_result:
+                parts = ai_filter_result.split("RELEVANT_DOCS:")
+                docs_line = parts[1].strip()
+                relevant_doc_names = [s.strip().rstrip('.').strip() for s in docs_line.split(',')]
+                relevant_doc_names = [name for name in relevant_doc_names if name]
+
+                # Map back to full file paths
+                for name in relevant_doc_names:
+                    if name in available_sources:
+                        document_files.add(available_sources[name])
+                        logger.info(f"AI identified relevant document: {name}")
+                    else:
+                        logger.warning(f"AI mentioned document '{name}' not found in available sources")
+
+                logger.info(f"AI filtered to {len(document_files)} relevant document(s) for topic '{topic}'")
+            else:
+                # Fallback: if AI doesn't follow format, use all documents
+                document_files = set(available_sources.values())
+                logger.warning(f"AI didn't follow format, using all {len(document_files)} documents")
+
+            # Download documents from S3
+            documents_to_send = []
+            for file_path in document_files:
+                try:
+                    s3_response = s3_service.s3_client.get_object(
+                        Bucket=s3_service.bucket_name,
+                        Key=file_path
+                    )
+                    doc_bytes = s3_response['Body'].read()
+
+                    # Extract filename from S3 key
+                    display_filename = file_path.split('/')[-1]
+
+                    documents_to_send.append({
+                        'bytes': doc_bytes,
+                        'filename': display_filename
+                    })
+
+                    logger.info(f"Downloaded document: {display_filename}")
+
+                except Exception as e:
+                    logger.warning(f"Failed to download document {file_path}: {str(e)}")
+                    continue
+
+            if not documents_to_send:
+                return {
+                    "success": True,
+                    "data": {
+                        "message": "I found relevant documents but couldn't retrieve them from storage. Please try again later.",
+                        "sources": [],
+                        "is_send_docs_response": False
+                    }
+                }
+
+            # Send documents via email
+            try:
+                await email_service.send_documents_email(
+                    to_email=email_address,
+                    subject=f"Documents related to: {topic}",
+                    documents=documents_to_send
+                )
+
+                doc_list = "\n".join([f"- {doc['filename']}" for doc in documents_to_send])
+
+                return {
+                    "success": True,
+                    "data": {
+                        "message": f"✅ Perfect! I've sent {len(documents_to_send)} document(s) related to '{topic}' to **{email_address}**.\n\nDocuments sent:\n{doc_list}\n\nPlease check your inbox (and spam folder just in case).",
+                        "sources": [],
+                        "is_send_docs_response": True,
+                        "email_sent": True,
+                        "email_address": email_address,
+                        "documents_count": len(documents_to_send)
+                    }
+                }
+
+            except Exception as e:
+                logger.error(f"Failed to send documents email: {str(e)}")
+                return {
+                    "success": True,
+                    "data": {
+                        "message": f"I found the documents but couldn't send the email. Error: {str(e)}",
+                        "sources": [],
+                        "is_send_docs_response": False
+                    }
+                }
 
         # Check if user wants to email the PDF
         email_intent = await chat_service.detect_email_intent(request.message)
@@ -638,10 +821,20 @@ CRITICAL INSTRUCTION: After your summary, you MUST list ONLY the source document
                     source_file_names = set()
                     logger.warning("AI didn't specify sources in the correct format, no source documents will be attached")
 
-                # Create PDF with the query and AI summary
+                # Extract display filenames from source file paths
+                source_document_names = []
+                if source_file_names:
+                    for file_path in source_file_names:
+                        # Extract just the filename from the S3 key
+                        display_filename = file_path.split('/')[-1]
+                        source_document_names.append(display_filename)
+                    logger.info(f"Source documents to include in PDF: {source_document_names}")
+
+                # Create PDF with the query, AI summary, and source document names
                 pdf_bytes = pdf_generator.generate_from_prompt(
                     prompt=query,
-                    response=ai_summary
+                    response=ai_summary,
+                    source_documents=source_document_names
                 )
                 filename = "document_content.pdf"
 
@@ -676,65 +869,23 @@ CRITICAL INSTRUCTION: After your summary, you MUST list ONLY the source document
                     # Determine email subject based on PDF type
                     if pdf_intent["type"] == "history":
                         subject = "Your CaseBase Conversation Summary"
-                        source_pdfs_to_attach = []  # No source documents for conversation history
                     else:
                         subject = "Your CaseBase Document Report"
 
-                        # Download source PDFs from S3 for vector_content type
-                        source_pdfs_to_attach = []
-                        if 'source_file_names' in locals() and source_file_names:
-                            logger.info(f"Downloading {len(source_file_names)} source PDFs from S3...")
+                    # Send email with PDF attachment
+                    await email_service.send_pdf_email(
+                        to_email=email_address,
+                        subject=subject,
+                        pdf_bytes=pdf_bytes,
+                        pdf_filename=filename
+                    )
 
-                            for source_file in source_file_names:
-                                try:
-                                    # Download from S3
-                                    s3_response = s3_service.s3_client.get_object(
-                                        Bucket=s3_service.bucket_name,
-                                        Key=source_file
-                                    )
-                                    source_pdf_bytes = s3_response['Body'].read()
-
-                                    # Extract just the filename from the S3 key
-                                    display_filename = source_file.split('/')[-1]
-
-                                    source_pdfs_to_attach.append({
-                                        'bytes': source_pdf_bytes,
-                                        'filename': display_filename
-                                    })
-
-                                    logger.info(f"Downloaded source PDF: {display_filename}")
-
-                                except Exception as e:
-                                    logger.warning(f"Failed to download source PDF {source_file}: {str(e)}")
-                                    # Continue with other files even if one fails
-
-                    # Send email with PDF attachment(s)
-                    if source_pdfs_to_attach:
-                        # Send with source documents
-                        await email_service.send_pdf_email_with_sources(
-                            to_email=email_address,
-                            subject=subject,
-                            main_pdf_bytes=pdf_bytes,
-                            main_pdf_filename=filename,
-                            source_pdfs=source_pdfs_to_attach
-                        )
-                        attachment_info = f" along with {len(source_pdfs_to_attach)} supporting document(s)"
-                    else:
-                        # Send without source documents
-                        await email_service.send_pdf_email(
-                            to_email=email_address,
-                            subject=subject,
-                            pdf_bytes=pdf_bytes,
-                            pdf_filename=filename
-                        )
-                        attachment_info = ""
-
-                    logger.info(f"PDF successfully emailed to {email_address}{attachment_info}")
+                    logger.info(f"PDF successfully emailed to {email_address}")
 
                     return {
                         "success": True,
                         "data": {
-                            "message": f"✅ Perfect! I've created your PDF{attachment_info} and sent it to **{email_address}**. Please check your inbox (and spam folder just in case).",
+                            "message": f"✅ Perfect! I've created your PDF and sent it to **{email_address}**. Please check your inbox (and spam folder just in case).",
                             "sources": [],
                             "is_pdf_response": True,
                             "email_sent": True,

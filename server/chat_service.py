@@ -311,6 +311,74 @@ Answer with only one word: history, vector_content, or chat."""
             # Fail safe: if classifier fails, treat as normal chat
             return {"is_pdf_request": False, "type": None}
 
+    async def detect_send_documents_intent(self, message: str) -> Dict:
+        """
+        Detect if the user wants to send/email existing documents (not create a PDF).
+
+        Args:
+            message: User's message
+
+        Returns:
+            Dictionary with 'wants_send_docs' bool, 'email_address' string, and 'topic' string
+        """
+        try:
+            classifier_prompt = f"""You are an intent detector for a document management system.
+
+Analyze this user message and determine:
+1. Does the user want to SEND/EMAIL existing documents (not create a new PDF)?
+2. If yes, what email address?
+3. What topic/subject are they asking about?
+
+User message: "{message}"
+
+Respond in this EXACT format:
+- If they want to send documents: "SEND_DOCS|email@example.com|topic description"
+- If they don't want to send documents: "NO_SEND"
+
+Examples:
+- "Send me all documents relating to CaseBase to alex@email.com" → SEND_DOCS|alex@email.com|CaseBase
+- "Email me documents about the resumes to john@test.com" → SEND_DOCS|john@test.com|resumes
+- "Can you send the job description files to me at user@domain.org" → SEND_DOCS|user@domain.org|job description
+- "Create a PDF about Alex" → NO_SEND (this is PDF creation, not sending existing docs)
+- "What documents do you have?" → NO_SEND (just asking, not requesting to send)
+
+Your response:"""
+
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are an intent detector. Extract email addresses and topics accurately."},
+                    {"role": "user", "content": classifier_prompt}
+                ],
+                temperature=0,
+                max_tokens=100
+            )
+
+            result = response.choices[0].message.content.strip()
+            logger.info(f"Send documents intent detection result: {result}")
+
+            # Parse the response
+            if result.startswith("SEND_DOCS|"):
+                parts = result.replace("SEND_DOCS|", "").split("|")
+                if len(parts) >= 2:
+                    email_address = parts[0].strip()
+                    topic = parts[1].strip() if len(parts) > 1 else ""
+                    return {
+                        "wants_send_docs": True,
+                        "email_address": email_address,
+                        "topic": topic
+                    }
+
+            return {
+                "wants_send_docs": False,
+                "email_address": None,
+                "topic": None
+            }
+
+        except Exception as e:
+            logger.error(f"Error in send documents intent detection: {str(e)}")
+            return {"wants_send_docs": False, "email_address": None, "topic": None}
+
     async def get_chat_completion_stream(
         self,
         message: str,

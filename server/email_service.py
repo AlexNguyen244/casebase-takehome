@@ -207,6 +207,88 @@ class EmailService:
             logger.error(f"Failed to send email with sources: {str(e)}")
             raise Exception(f"Email delivery failed: {str(e)}")
 
+    async def send_documents_email(
+        self,
+        to_email: str,
+        subject: str,
+        documents: list,
+        message_body: str = None
+    ) -> dict:
+        """
+        Send an email with multiple document attachments (no main PDF).
+
+        Args:
+            to_email: Recipient email address
+            subject: Email subject line
+            documents: List of dicts with 'bytes' and 'filename' keys for documents
+            message_body: Optional custom message body
+
+        Returns:
+            dict: Response from SendGrid API
+
+        Raises:
+            Exception: If email sending fails
+        """
+        try:
+            # Default message body if none provided
+            if not message_body:
+                doc_count = len(documents) if documents else 0
+                message_body = f"""
+                <html>
+                <body>
+                    <h2>Your Requested Documents</h2>
+                    <p>Hello,</p>
+                    <p>Here are the {doc_count} document(s) you requested.</p>
+                    <p>All files are attached to this email.</p>
+                    <br>
+                    <p>Best regards,<br>
+                    <strong>Casey - CaseBase AI Assistant</strong></p>
+                    <hr>
+                    <p style="font-size: 12px; color: #666;">
+                        This is an automated email from CaseBase. Please do not reply to this message.
+                    </p>
+                </body>
+                </html>
+                """
+
+            # Create the email message
+            message = Mail(
+                from_email=self.from_email,
+                to_emails=to_email,
+                subject=subject,
+                html_content=message_body
+            )
+
+            # Attach all documents
+            if documents:
+                for idx, doc in enumerate(documents):
+                    encoded_doc = base64.b64encode(doc['bytes']).decode()
+                    attachment = Attachment(
+                        FileContent(encoded_doc),
+                        FileName(doc['filename']),
+                        FileType('application/pdf'),
+                        Disposition('attachment')
+                    )
+                    message.add_attachment(attachment)
+                    logger.info(f"Added document attachment {idx + 1}: {doc['filename']}")
+
+            # Send email
+            attachment_count = len(documents) if documents else 0
+            logger.info(f"Sending email to {to_email} with {attachment_count} document attachment(s)")
+            response = self.client.send(message)
+
+            logger.info(f"Email sent successfully. Status code: {response.status_code}")
+
+            return {
+                "success": True,
+                "status_code": response.status_code,
+                "message": f"Documents successfully sent to {to_email} ({attachment_count} attachment(s))"
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to send documents email: {str(e)}")
+            raise Exception(f"Email delivery failed: {str(e)}")
+
 
 # Global email service instance (will be initialized in main.py)
 email_service = None
