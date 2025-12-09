@@ -1,13 +1,13 @@
 {
   "files": {
     "main.css": "/casebase-takehome/static/css/main.b48aff76.css",
-    "main.js": "/casebase-takehome/static/js/main.6b0d84b9.js",
+    "main.js": "/casebase-takehome/static/js/main.e62572ae.js",
     "index.html": "/casebase-takehome/index.html",
     "main.b48aff76.css.map": "/casebase-takehome/static/css/main.b48aff76.css.map",
-    "main.6b0d84b9.js.map": "/casebase-takehome/static/js/main.6b0d84b9.js.map"
+    "main.e62572ae.js.map": "/casebase-takehome/static/js/main.e62572ae.js.map"
   },
   "entrypoints": [
     "static/css/main.b48aff76.css",
-    "static/js/main.6b0d84b9.js"
+    "static/js/main.e62572ae.js"
   ]
 }
