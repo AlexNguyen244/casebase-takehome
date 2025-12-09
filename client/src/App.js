@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react';
 import PDFViewer from './components/PDFViewer';
 import Chatbot from './components/Chatbot';
 
-const API_BASE_URL = 'http://localhost:8000';
+// Use environment variable for API URL (falls back to localhost for development)
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
 function App() {
   const [uploadedPDFs, setUploadedPDFs] = useState([]);

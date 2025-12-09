@@ -304,7 +304,27 @@ No additional configuration needed. Connects to backend at `http://localhost:800
 5. Tracks source documents used
 6. Executes action (reply/create PDF/send email)
 
-## 🚀 Development
+## 🌐 Production Deployment
+
+Deploy to production in ~30 minutes:
+
+### Quick Deploy
+```bash
+# 1. Deploy backend to Render (use Render Dashboard + set env vars)
+# 2. Deploy frontend to GitHub Pages
+cd client
+npm run deploy
+```
+
+**See deployment guides:**
+- **DEPLOYMENT-QUICKSTART.md** - One-page quick reference
+- **DEPLOYMENT.md** - Complete step-by-step guide
+
+**Live URLs after deployment:**
+- Frontend: `https://<username>.github.io/casebase-takehome`
+- Backend: `https://your-app.onrender.com`
+
+## 🚀 Local Development
 
 ### Running Both Services
 
@@ -328,6 +348,8 @@ npm start
 ## 📚 Documentation
 
 - **Root README** - This file (overview)
+- **DEPLOYMENT.md** - Complete deployment guide (GitHub Pages + Render)
+- **DEPLOYMENT-QUICKSTART.md** - Quick deployment reference
 - **server/README.md** - Complete backend documentation
 - **server/QUICKSTART.md** - Quick backend setup
 - **server/RAG_README.md** - RAG architecture details
