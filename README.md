@@ -103,7 +103,9 @@ casebase-takehome/
 - **Source Attribution**: AI tracks and cites source documents
 
 #### Advanced Capabilities
-- **Multi-Intent Detection**: Automatically handles chat, PDF creation, and email requests
+- **Multi-Intent Detection**: Automatically handles chat, PDF creation, email, and bulk send requests
+- **Bulk PDF Sending**: Send multiple generated PDFs at once (all, last N, or specific PDFs)
+- **Email Memory**: Remembers email addresses across conversation for seamless sending
 - **AI Document Filtering**: Intelligently filters relevant documents
 - **Markdown Support**: Full markdown rendering in generated PDFs
 - **Source Inclusion**: PDFs list source documents at the end
@@ -193,6 +195,7 @@ npm start
   - PDF creation requests
   - Email sending requests
   - Document sending requests
+  - Bulk PDF sending (all, last N, or specific PDFs)
 
 ### API Documentation
 - **Swagger UI**: http://localhost:8000/docs
@@ -228,6 +231,24 @@ curl -X POST http://localhost:8000/api/chat \
   -d '{"message": "Send all documents about Alex to user@example.com"}'
 ```
 
+### Bulk Send Generated PDFs
+```bash
+# Send all generated PDFs from the conversation
+curl -X POST http://localhost:8000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Send all PDFs to user@example.com"}'
+
+# Send last 3 generated PDFs
+curl -X POST http://localhost:8000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Email me the last 3 PDFs", "conversation_history": [...]}'
+
+# Send last PDF only
+curl -X POST http://localhost:8000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Send the last PDF to user@example.com"}'
+```
+
 ## 🎨 Frontend Components
 
 ### PDFUploader
@@ -246,8 +267,9 @@ curl -X POST http://localhost:8000/api/chat \
 - Natural language interface
 - Chat with your documents
 - Automatic PDF creation detection
-- Email integration
-- Conversation history
+- Email integration with memory
+- Bulk PDF sending (all, last N, specific)
+- Conversation history tracking
 - Typing indicators
 
 ## ⚙️ Configuration
@@ -298,11 +320,12 @@ No additional configuration needed. Connects to backend at `http://localhost:800
 
 ### AI Chat Flow
 1. User sends message
-2. AI detects intent (chat/PDF/email/send docs)
-3. Retrieves relevant document chunks
-4. Generates response using GPT-4o-mini
-5. Tracks source documents used
-6. Executes action (reply/create PDF/send email)
+2. AI detects intent (chat/PDF creation/email/send docs/bulk PDF send)
+3. For bulk send: Tracks generated PDFs from conversation history
+4. Retrieves relevant document chunks (for queries)
+5. Generates response using GPT-4o-mini
+6. Tracks source documents used
+7. Executes action (reply/create PDF/send email/bulk send PDFs)
 
 ## 🌐 Production Deployment
 

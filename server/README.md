@@ -15,7 +15,10 @@ FastAPI server for the CaseBase AI platform with intelligent document management
 
 ### Advanced Capabilities
 - **AI-Powered Document Filtering**: Intelligently filters relevant documents for queries
-- **Multi-Intent Detection**: Automatically detects PDF creation, email, and document send requests
+- **Multi-Intent Detection**: Automatically detects PDF creation, email, document send, and bulk PDF send requests
+- **Bulk PDF Sending**: Send multiple generated PDFs at once (all, last N, or last one)
+- **Email Memory**: Remembers email addresses across conversation for seamless interactions
+- **PDF Tracking**: Tracks all generated PDFs from conversation history
 - **Source Document Inclusion**: Generated PDFs include source document references
 - **Markdown Support**: Full markdown formatting in generated PDFs
 - **CORS Enabled**: Ready for React frontend integration
@@ -173,6 +176,8 @@ The API will be available at `http://localhost:8000`
   - Automatically detects PDF creation requests
   - Detects email sending requests
   - Detects document sending requests
+  - Detects bulk PDF sending requests (all, last N, specific)
+  - Tracks generated PDFs from conversation history
   - Returns AI-generated responses with source citations
 
 ### PDF Generation
@@ -251,6 +256,36 @@ curl -X POST "http://localhost:8000/api/chat" \
 
 AI filters and sends only relevant documents.
 
+### Bulk Send Generated PDFs
+
+```bash
+# Send all generated PDFs from conversation
+curl -X POST "http://localhost:8000/api/chat" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Send all PDFs to alex@example.com",
+    "conversation_history": [...]
+  }'
+
+# Send last 3 generated PDFs
+curl -X POST "http://localhost:8000/api/chat" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Email me the last 3 PDFs",
+    "conversation_history": [...]
+  }'
+
+# Send only the last generated PDF
+curl -X POST "http://localhost:8000/api/chat" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Send the last PDF to alex@example.com",
+    "conversation_history": [...]
+  }'
+```
+
+The system tracks all generated PDFs in the conversation and intelligently selects which ones to send.
+
 ### Query RAG System
 
 ```bash
@@ -278,6 +313,9 @@ Removes from both S3 and Pinecone vector database.
 ```
 server/
 ├── main.py                  # FastAPI application and API endpoints
+│                            # Includes helper functions:
+│                            # - extract_most_recent_email_from_history()
+│                            # - extract_generated_pdfs_from_history()
 ├── config.py                # Configuration and environment settings
 │
 ├── Services/
@@ -288,6 +326,10 @@ server/
 │   ├── pinecone_service.py  # Pinecone vector database
 │   ├── rag_service.py       # RAG pipeline orchestration
 │   ├── chat_service.py      # AI chat with intent detection
+│                            # - detect_email_intent()
+│                            # - detect_pdf_creation_intent()
+│                            # - detect_send_documents_intent()
+│                            # - detect_bulk_pdf_send_intent()
 │   ├── pdf_generator.py     # PDF creation with ReportLab
 │   └── email_service.py     # SendGrid email integration
 │
@@ -396,27 +438,36 @@ Common HTTP status codes:
    - PDF creation request
    - Email sending request
    - Document sending request
+   - Bulk PDF send request (all, last N, or last one)
 
-2. **Query Processing**:
+2. **PDF Tracking** (for bulk send):
+   - Extract all generated PDF S3 keys from conversation history
+   - Parse selection criteria (all, last N, specific)
+   - Select appropriate PDFs based on user request
+
+3. **Query Processing** (for chat/documents):
    - Extract topic/query from user message
    - Generate embeddings
    - Retrieve relevant document chunks
 
-3. **AI Response Generation**:
+4. **AI Response Generation**:
    - Build context from retrieved chunks
    - Generate AI response using GPT-4o-mini
    - Track which sources were actually used
 
-4. **Action Execution**:
+5. **Action Execution**:
    - For chat: Return AI response with sources
    - For PDF: Generate PDF with source attribution
    - For email: Send PDF via SendGrid
    - For documents: Filter relevant docs and email
+   - For bulk send: Download selected PDFs from S3 and email all at once
 
 ## Architecture Highlights
 
 - **Asynchronous Processing**: All services use async/await for performance
-- **Intent-Based Routing**: Multi-classifier system for request handling
+- **Intent-Based Routing**: Multi-classifier system for request handling (chat, PDF, email, bulk send)
+- **Conversation Tracking**: Tracks generated PDFs across conversation for bulk operations
+- **Email Memory**: Remembers email addresses for seamless multi-step interactions
 - **Source Attribution**: AI explicitly tracks document usage
 - **Smart Filtering**: AI-powered relevance filtering for document selection
 - **Markdown Support**: Full markdown rendering in generated PDFs

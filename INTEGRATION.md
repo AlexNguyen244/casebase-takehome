@@ -80,6 +80,7 @@ const sendMessage = async (message) => {
   - **PDF Creation**: Generates and returns PDF
   - **Email**: Creates and sends PDF via email
   - **Send Docs**: Filters and emails documents
+  - **Bulk PDF Send**: Sends multiple generated PDFs (all, last N, or last one)
 
 ### 3. PDF Viewing
 
@@ -143,10 +144,12 @@ const handleDeletePDF = async (s3_key) => {
 - Efficient semantic search
 
 ✅ **AI Chat**
-- Multi-intent detection
+- Multi-intent detection (chat/PDF/email/send docs/bulk send)
 - Source attribution
 - PDF creation from documents
-- Email integration
+- Email integration with memory
+- Bulk PDF sending (all, last N, or specific)
+- Conversation history tracking
 - Document filtering
 
 ✅ **PDF Generation**
@@ -184,6 +187,7 @@ If chat: RAG retrieval → AI response → Frontend displays
 If PDF: Generate PDF → Return download link → Frontend opens
 If email: Generate PDF → Send email → Frontend confirms
 If send docs: Filter docs → Send email → Frontend confirms
+If bulk send: Track PDFs from history → Select PDFs → Send all → Frontend confirms
 ```
 
 ### Delete Flow
@@ -248,6 +252,13 @@ npm start
 - Type: "Send all documents about Alex to user@example.com"
 - Verify only relevant documents sent
 - Check email for attachments
+
+**6. Bulk Send Generated PDFs**
+- Create multiple PDFs in the conversation
+- Type: "Send all PDFs to user@example.com"
+- Verify all generated PDFs are sent in one email
+- Or type: "Email me the last 3 PDFs"
+- Verify only the last 3 PDFs are sent
 
 ## 📡 API Endpoints Reference
 
