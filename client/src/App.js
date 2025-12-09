@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react';
-import PDFUploader from './components/PDFUploader';
 import PDFViewer from './components/PDFViewer';
 import Chatbot from './components/Chatbot';
 
@@ -49,14 +48,14 @@ function App() {
 
         const result = await response.json();
 
-        if (response.ok && result.data) {
+        if (response.ok && result.s3_data) {
           return {
-            id: result.data.s3_key,
-            name: result.data.file_name,
-            size: result.data.file_size,
-            uploadedAt: result.data.uploaded_at,
-            s3_key: result.data.s3_key,
-            s3_url: result.data.s3_url
+            id: result.s3_data.s3_key,
+            name: result.s3_data.file_name,
+            size: result.s3_data.file_size,
+            uploadedAt: result.s3_data.uploaded_at,
+            s3_key: result.s3_data.s3_key,
+            s3_url: result.s3_data.s3_url
           };
         } else {
           console.error('Upload failed:', result);
@@ -99,14 +98,20 @@ function App() {
           <p className="text-gray-600">Community Supervision Platform</p>
         </header>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-          <div className="space-y-6">
-            <PDFUploader onUpload={handlePDFUpload} isLoading={isLoading} />
-            <PDFViewer pdfs={uploadedPDFs} onDelete={handleDeletePDF} />
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Chatbot takes up 2 columns */}
+          <div className="lg:col-span-2">
+            <Chatbot uploadedPDFs={uploadedPDFs} />
           </div>
 
+          {/* Document list takes up 1 column on the right */}
           <div className="lg:col-span-1">
-            <Chatbot uploadedPDFs={uploadedPDFs} />
+            <PDFViewer
+              pdfs={uploadedPDFs}
+              onDelete={handleDeletePDF}
+              onUpload={handlePDFUpload}
+              isLoading={isLoading}
+            />
           </div>
         </div>
       </div>

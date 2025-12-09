@@ -121,7 +121,7 @@ const Chatbot = ({ uploadedPDFs }) => {
   };
 
   return (
-    <div className="bg-white rounded-lg shadow-md flex flex-col h-[600px]">
+    <div className="bg-white rounded-lg shadow-md flex flex-col h-[700px]">
       <div className="bg-gradient-to-r from-primary to-primary-dark text-white p-6 rounded-t-lg">
         <h2 className="text-2xl font-bold text-center">Hey, I'm Casey!</h2>
         <p className="text-center text-blue-100 text-sm mt-1">
@@ -218,7 +218,8 @@ const Chatbot = ({ uploadedPDFs }) => {
           Privacy notice • <span className="underline cursor-pointer">Terms</span>
         </p>
 
-        <form onSubmit={handleSendMessage} className="flex space-x-2">
+        <form onSubmit={handleSendMessage} className="flex items-center space-x-2">
+          {/* Message input */}
           <input
             ref={inputRef}
             type="text"
@@ -227,10 +228,12 @@ const Chatbot = ({ uploadedPDFs }) => {
             placeholder="Ask me about your documents..."
             className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
           />
+
+          {/* Send button */}
           <button
             type="submit"
             disabled={!inputMessage.trim()}
-            className="bg-primary hover:bg-primary-dark disabled:bg-gray-300 disabled:cursor-not-allowed text-white p-3 rounded-lg transition-all"
+            className="bg-primary hover:bg-primary-dark disabled:bg-gray-300 disabled:cursor-not-allowed text-white p-3 rounded-lg transition-all flex-shrink-0"
           >
             <Send className="w-5 h-5" />
           </button>

@@ -10,7 +10,6 @@ import uuid
 
 logger = logging.getLogger(__name__)
 
-
 class PineconeService:
     """Service for managing vector storage in Pinecone."""
 

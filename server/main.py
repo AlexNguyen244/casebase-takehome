@@ -275,11 +275,12 @@ async def get_download_url(s3_key: str, expiration: int = 3600):
         dict: Presigned download URL
     """
     try:
-        url = await s3_service.get_pdf_url(s3_key, expiration)
+        # Return a proxy URL through our backend instead of presigned URL
+        proxy_url = f"http://localhost:8000/api/pdfs/view/{s3_key}"
 
         return {
             "message": "Download URL generated successfully",
-            "url": url,
+            "url": proxy_url,
             "expires_in": expiration
         }
 
@@ -288,6 +289,46 @@ async def get_download_url(s3_key: str, expiration: int = 3600):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate download URL: {str(e)}"
+        )
+
+
+@app.get("/api/pdfs/view/{s3_key:path}")
+async def view_pdf(s3_key: str):
+    """
+    Stream PDF directly from S3 through the backend.
+
+    Args:
+        s3_key: S3 key of the file
+
+    Returns:
+        StreamingResponse: PDF file stream
+    """
+    try:
+        from fastapi.responses import StreamingResponse
+        import io
+
+        # Get the PDF from S3
+        response = s3_service.s3_client.get_object(
+            Bucket=s3_service.bucket_name,
+            Key=s3_key
+        )
+
+        # Stream the PDF
+        pdf_content = response['Body'].read()
+
+        return StreamingResponse(
+            io.BytesIO(pdf_content),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"inline; filename={s3_key.split('/')[-1]}"
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to stream PDF: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to stream PDF: {str(e)}"
         )
 
 
